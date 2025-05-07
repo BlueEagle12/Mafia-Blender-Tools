@@ -43,6 +43,44 @@ class Scene2Prefs(bpy.types.AddonPreferences):
         self.layout.prop(self, "maps_folder")
 
 
+# World consts
+WORLD_Mission = 0x4c53
+WORLD_Meta = 0x0001
+WORLD_Unknown_File = 0xAFFF
+WORLD_Unknown_File2 = 0x3200
+WORLD_Fov = 0x3010
+WORLD_ViewDistance = 0x3011
+WORLD_ClippingPlanes = 0x3211
+WORLD_World = 0x4000
+WORLD_SpecialWorld = 0xAE20
+WORLD_Entities = 0xAE20
+WORLD_Init = 0xAE50
+WORLD_Object = 0x4010
+WORLD_SpecialObject = 0xAE21
+        
+# Scene consts
+SCENE_TypeSpecial = 0xAE22
+SCENE_TypeNormal = 0x4011
+SCENE_Position = 0x0020
+SCENE_Rotation = 0x0022
+SCENE_Position2 = 0x002C
+SCENE_Scale = 0x002D
+SCENE_Parent = 0x4020
+SCENE_Hidden = 0x4033
+SCENE_Name = 0x0010
+SCENE_Name_Special = 0xAE23
+SCENE_Model = 0x2012
+SCENE_Light_Main = 0x4040
+SCENE_Light_Type = 0x4041
+SCENE_Light_Color = 0x0026
+SCENE_Light_Power = 0x4042
+SCENE_Light_Unknown = 0x4043
+SCENE_Light_Range = 0x4044
+SCENE_Light_Flags = 0x4045
+SCENE_Light_Sector = 0x4046
+SCENE_SpecialData = 0xAE24
+
+
 
 
 class ImportScene2(bpy.types.Operator, ImportHelper):
@@ -104,10 +142,10 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
                     data_start = ptr + 6
                     data_end = ptr + hsize
 
-                    if htype in (0x4000, 0xAE20):
+                    if htype in (WORLD_World, WORLD_SpecialWorld):
                         parse_chunk(data_start, data_end)
 
-                    elif htype in (0x4010, 0xAE21):
+                    elif htype in (WORLD_Object, WORLD_SpecialObject):
                         props_ptr = data_start
                         obj = {'pos': None, 'rot': None,'scale': None, 'model': None}
 
@@ -116,25 +154,25 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
                             ptype, psize = self.read_header(f)
                             dstart = props_ptr + 6
 
-                            if ptype in (0x0010, 0xAE23):
+                            if ptype in (SCENE_Name, SCENE_Name_Special):
                                 f.seek(dstart)
                                 obj['name'] = self.read_cstr(f)
-                            elif ptype == 0x2012:
+                            elif ptype == SCENE_Model:
                                 f.seek(dstart)
                                 m = self.read_cstr(f).lower().replace('.i3d', '.4ds')
                                 obj['model'] = m
-                            elif ptype == 0x0020:
+                            elif ptype == SCENE_Position:
                                 f.seek(dstart)
                                 pos = struct.unpack('<3f', f.read(12))
                                 obj['pos'] = (pos[0],pos[2],pos[1])
-                            elif ptype == 0x002d:
+                            elif ptype == SCENE_Scale:
                                 f.seek(dstart)
                                 scale = struct.unpack('<3f', f.read(12))
                                 obj['scale'] = (scale[0],scale[2],scale[1])
-                            elif ptype == 0x4020:
+                            elif ptype == SCENE_Parent:
                                 f.seek(dstart)
                                 obj['parent'] = struct.unpack('<H', f.read(2))[0]
-                            elif ptype == 0x0022:
+                            elif ptype == SCENE_Rotation:
                                 f.seek(dstart)
                                 q = struct.unpack('<4f', f.read(16))
                                 quat = Quaternion((q[0], q[1], q[3], q[2]))
