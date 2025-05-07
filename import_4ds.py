@@ -7,14 +7,14 @@ from math import radians
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 
-class Import4DSPrefs(bpy.types.AddonPreferences):
+class Import4DSPrefs(bpy.types.AddonPreferences): ## Optional
     bl_idname = __name__
 
     maps_folder: StringProperty(
-        name="Base Folder",
+        name="(Optional) Root Folder",
         subtype='DIR_PATH',
         default="",
-        description="Base mafia dictonary, expects the maps to be extracted"
+        description="Parent dictonary of extracted maps (Typically your root mafia dictonary)"
     )
 
     def draw(self, context):
