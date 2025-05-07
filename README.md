@@ -84,4 +84,9 @@ Licensed under the MIT License. See [LICENSE](./LICENSE) for details.
 
 ---
 
+## Todo
+
+- Progress bar
+- cache.bin importer
+
 Enjoy importing your Mafia 1 worlds into Blender!
