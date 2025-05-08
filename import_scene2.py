@@ -27,6 +27,7 @@ PROP_POSITION         = 0x0020
 PROP_PARENT           = 0x4020
 PROP_ROTATION         = 0x0022
 PROP_SCALE            = 0x002D
+PROP_HIDDEN           = 0x4033
 PROP_LIGHT_MAIN       = 0x4040
 
 LIGHT_TYPE            = 0x4041
@@ -91,8 +92,9 @@ class Scene2Prefs(bpy.types.AddonPreferences):
         name="Mafia Root Folder",
         subtype='DIR_PATH',
         default="",
-        description="Optional root folder for .4DS files"
-    )
+        description="Root folder for .4DS files"
+    ) # type: ignore
+
     def draw(self, context):
         self.layout.prop(self, "maps_folder")
 
@@ -103,6 +105,24 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".bin"
     filter_glob: StringProperty(default="*.bin", options={'HIDDEN'})
+
+    light_power: bpy.props.FloatProperty(
+    name="Light Power",
+    default=100.0,
+    min=0.0,
+    max=10000.0,
+    description="Power value for imported lights"
+    ) # type: ignore
+
+    sun_power: bpy.props.FloatProperty(
+    name="Sun Power",
+    default=5.0,
+    min=0.0,
+    max=10000.0,
+    description="Power value for imported sun(s)"
+    ) # type: ignore
+
+
 
     def execute(self, context):
         prefs = context.preferences.addons[__name__].preferences
@@ -147,7 +167,18 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
 
         model_name = obj.get('model')
         if not model_name:
-            # nothing to import here
+            target_obj = bpy.data.objects.get(obj.get('name'))
+            if target_obj:
+
+                if obj['pos']:
+                    target_obj.location        = obj['pos']
+                if obj['rot']:
+                    target_obj.rotation_euler  = obj['rot']
+                if obj['scale']:
+                    target_obj.scale           = obj['scale']      
+                if obj['hidden']:
+                    target_obj.hide_viewport = True
+                    target_obj.hide_render = True
             return
     
         path = self._find_mesh(obj['model'])
@@ -160,6 +191,11 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
         imp4ds = Scene2Importer(path)
         imp4ds.import_file()
         for new in set(self.scene.objects) - before:
+
+            if obj['hidden']:
+                new.hide_viewport = True
+                new.hide_render = True
+
             if new.parent is None:
                 empty = bpy.data.objects.new(obj['name'] + "_root", None)
                 self.scene.collection.objects.link(empty)
@@ -175,7 +211,6 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
 
     def _create_light(self, lt):
         # Ensure we have a light entry
-        name = lt.get('name', 'Light')
 
         code = lt.get('light_type')
 
@@ -185,10 +220,12 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
         # Map Mafia light code to Blender light type string
         ltype = LIGHT_TYPES.get(code, 'POINT')
 
+        name = ltype#lt.get('name', ltype)
+
         # Create new light data block
         ld = bpy.data.lights.new(name=name, type=ltype)
 
-        # Safely assign color, intensity (energy), and range
+        # assign color, intensity (energy), and range
         color = lt.get('color')
         if color is None:
             color = (1.0, 1.0, 1.0)
@@ -197,11 +234,11 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
         power = lt.get('power')
 
         if ltype == "SUN":
-            ld.energy = (power if power is not None else 250.0)*5
+            ld.energy = (power if power is not None else 250.0)*self.sun_power
         elif ltype == "POINT":
-            ld.energy = (power if power is not None else 250.0)*100
+            ld.energy = (power if power is not None else 250.0)*self.light_power
         else:
-            ld.energy = (power if power is not None else 250.0)*100
+            ld.energy = (power if power is not None else 250.0)*self.light_power
 
         rng = lt.get('range')
         if rng is not None:
@@ -332,6 +369,7 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
             'range':      None,
             'angle':      None,
             'parent_name':None,
+            'hidden':     None,
             'obj_type':   OBJ_MODEL
         }
 
@@ -388,6 +426,9 @@ class ImportScene2(bpy.types.Operator, ImportHelper):
             elif ptype == PROP_TYPE_NORMAL:
                 code = struct.unpack('<I', f.read(4))[0]
                 props['obj_type'] = code
+
+            elif ptype == PROP_HIDDEN:
+                props['hidden'] = True
 
             elif ptype == PROP_LIGHT_MAIN:
                 sub_ptr = ptr + 6

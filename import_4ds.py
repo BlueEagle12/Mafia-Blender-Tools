@@ -68,6 +68,7 @@ VISUAL_EMITOR = 9
 VISUAL_SHADOW = 10
 VISUAL_LANDPATCH = 11
 
+alphaFallBack = ["9ker1.bmp"] # Some textures don't work properly, fallback to legacy alpha mapping
 
 class The4DSImporter:
     def __init__(self, filepath):
@@ -221,20 +222,23 @@ class The4DSImporter:
 
         palette, indices = self.get_bmp_palette_and_indices(filepath)
 
-        height = len(indices)
-        width = len(indices[0])
+        if indices:
+            height = len(indices)
+            width = len(indices[0])
 
-        image = bpy.data.images.new(name=image_name, width=width, height=height, alpha=True)
-        pixels = []
+            image = bpy.data.images.new(name=image_name, width=width, height=height, alpha=True)
+            pixels = []
 
-        for row in reversed(indices):
-            for index in row:
-                val = 0.0 if index == transparent_index else 1.0
-                pixels.extend([val, val, val, 1.0])
+            for row in reversed(indices):
+                for index in row:
+                    val = 0.0 if index == transparent_index else 1.0
+                    pixels.extend([val, val, val, 1.0])
 
-        image.pixels = pixels
-        image.pack()
-        return image
+            image.pixels = pixels
+            image.pack()
+            return image
+        else:
+            return False
 
 
     def get_or_load_texture(self, filepath):
@@ -288,7 +292,6 @@ class The4DSImporter:
             tex_image.image = self.get_or_load_texture(tex_path)
             tex_image.location = (-400, 200)
 
-            tex_image.interpolation = 'Closest'
 
             if "sky" in diffuse.lower():
                 material.use_backface_culling = True
@@ -300,33 +303,36 @@ class The4DSImporter:
 
                 tolerance = 0.4 # Sweet spot apparently
 
+                preAlphaMap = diffuse.lower() not in [tex.lower() for tex in alphaFallBack]
+
                 if use_color_key:
+                    
+                    tex_image.interpolation = 'Closest'
+
                     color_key4 = self.get_color_key(tex_path)
-                    color_key = color_key4[:3]
 
-                    preAlphaMap = False
+                    if color_key4:
 
-                    if preAlphaMap:
-                        alpha_map = self.create_alpha_image(tex_path,0) # Use a premade alpha map, more complicated but accurate.
-                    else:
-                        alpha_map = False
+                        if preAlphaMap:
+                            alpha_map = self.create_alpha_image(tex_path,0) # Use a premade alpha map, more complicated but accurate.
+                        else:
+                            alpha_map = False
 
-                    if alpha_map:
+                        if alpha_map:
+                            alpha_image = nodes.new("ShaderNodeTexImage")
+                            alpha_image.image = alpha_map
+                            
+                            alpha_image.location = (0, 200)
+                            links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
+                            material.blend_method    = 'CLIP'
+                            material.alpha_threshold = 0.5
 
-                        alpha_image = nodes.new("ShaderNodeTexImage")
-                        alpha_image.image = alpha_map
-                        
-                        alpha_image.location = (0, 200)
-                        links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
-                        material.blend_method    = 'CLIP'
-                        material.alpha_threshold = 0.5
+                            alpha_image.interpolation = 'Closest'
 
-                        alpha_image.interpolation = 'Closest'
+                            link_principled_to_output()
+                        else:
 
-                        link_principled_to_output()
-                    else:
-
-                        if color_key:
+                            color_key = color_key4[:3]
                             vec = nodes.new("ShaderNodeVectorMath")
                             vec.operation = 'DISTANCE'
                             vec.location = (0, 200)
@@ -348,12 +354,11 @@ class The4DSImporter:
 
                             # 4) Finally wire your Principled BSDF to the output
                             link_principled_to_output()
-                        else:
-                            print(f"Warning: no color key for {diffuse}")
-                            link_principled_to_output()
+                    else:
+                        print(f"Warning: no color key for {diffuse}")
+                        link_principled_to_output()
                 else:
                     link_principled_to_output()
-
         else:
             link_principled_to_output()
 
@@ -392,19 +397,19 @@ class The4DSImporter:
 
         # Reuse existing material if it exists
         mat = bpy.data.materials.get(mat_name)
+
+        alpha_tex = ""
+        if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha texture
+            alpha_tex = self.read_string(f).lower()
+
+        if flags & 0x04000000:  # Animated diffuse
+            struct.unpack("<I", f.read(4))  # Frames
+            f.read(2)  # Skip
+            struct.unpack("<I", f.read(4))  # Frame length
+            f.read(8)  # Skip
+
         if mat is None:
             mat = bpy.data.materials.new(name=mat_name)
-
-            alpha_tex = ""
-            if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha texture
-                alpha_tex = self.read_string(f).lower()
-
-            if flags & 0x04000000:  # Animated diffuse
-                struct.unpack("<I", f.read(4))  # Frames
-                f.read(2)  # Skip
-                struct.unpack("<I", f.read(4))  # Frame length
-                f.read(8)  # Skip
-
             self.set_material_data(
                 mat, diffuse_tex, alpha_tex, emission, alpha, metallic, use_color_key
             )
@@ -737,7 +742,7 @@ class The4DSImporter:
         # Set transformation (unchanged)
         empty.location = pos
         empty.rotation_mode = "QUATERNION"
-        empty.rotation_quaternion = (rot[0], rot[1], rot[3], rot[2])
+        empty.rotation_quaternion = rot#(rot[0], rot[1], rot[3], rot[2])
         empty.scale = scale
 
         # Store bounding box as custom properties (unchanged)
@@ -1106,7 +1111,7 @@ class The4DSImporter:
         name = self.read_string(f)
         user_props = self.read_string(f)
 
-        print(f"Creating frame #{self.frame_index} called {name}")
+        print(f"Creating frame #{self.frame_index} called {name} type {frame_type}")
 
         # Store frame type
         self.frame_types[self.frame_index] = frame_type
@@ -1150,6 +1155,22 @@ class The4DSImporter:
                 self.bones_map[self.frame_index] = self.base_bone_name
 
                 self.frame_index += 1
+
+            elif visual_type == VISUAL_BILLBOARD:
+                mesh_data = bpy.data.meshes.new(name + "_billboard")
+                mesh = bpy.data.objects.new(name, mesh_data)
+                bpy.context.collection.objects.link(mesh)
+                frames.append(mesh)
+                self.frames_map[self.frame_index] = mesh
+
+                self.frame_index += 1
+
+                mesh.matrix_local = transform_mat
+
+                self.deserialize_object(f, materials, mesh, mesh_data)
+                rotation_axis = struct.unpack("<I", f.read(4))[0]
+                ignore_camera = struct.unpack("<B", f.read(1))[0] > 0
+
 
             elif visual_type == VISUAL_SINGLEMORPH:
                 mesh_data = bpy.data.meshes.new(name + "_mesh")
@@ -1307,7 +1328,7 @@ class The4DSImporter:
                 is_animated = struct.unpack("<B", data)[0]
                 if is_animated:
                     print("Note: Animation flag detected (not implemented)")
-                    
+
     def apply_deferred_parenting(self):
         print("Applying deferred parenting...")
         print(f"Frames map: {self.frames_map}")
