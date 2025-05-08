@@ -191,109 +191,98 @@ class The4DSImporter:
     def set_material_data(
         self, material, diffuse, alpha_tex, emission, alpha, metallic, use_color_key
     ):
+        # Prepare material for nodes
         material.use_nodes = True
-        nodes = material.node_tree.nodes
-        links = material.node_tree.links
-        nodes.clear()  # Fresh start
+        nt = material.node_tree
+        nodes = nt.nodes
+        links = nt.links
+        nodes.clear()
 
-        # Core nodes
+        # Create core nodes
         principled = nodes.new("ShaderNodeBsdfPrincipled")
-        output = nodes.new("ShaderNodeOutputMaterial")
+        output    = nodes.new("ShaderNodeOutputMaterial")
+        principled.location = (-200, 0)
+        output.location    = ( 200, 0)
 
+        # Configure principled inputs
         principled.inputs["Emission Color"].default_value = (*emission, 1.0)
-        principled.inputs["Metallic"].default_value = metallic
+        principled.inputs["Metallic"       ].default_value = metallic
         principled.inputs["Specular IOR Level"].default_value = 0.0
-        principled.inputs["Roughness"].default_value = 0.0
+        principled.inputs["Roughness"      ].default_value = 0.0
+
+        # Helper to wire principled → output if nothing else takes that slot
+        def link_principled_to_output():
+            links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+
+        # --- DIFFUSE TEXTURE + COLOR-KEY CUTOUT ---
 
         if diffuse:
-            tex_path = f"{self.base_dir}/maps/{diffuse}"
+            tex_path  = f"{self.base_dir}/maps/{diffuse}"
             tex_image = nodes.new("ShaderNodeTexImage")
             tex_image.image = self.get_or_load_texture(tex_path)
+            tex_image.location = (-400, 200)
             links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
 
+            if "sky" in diffuse.lower():
+                material.use_backface_culling = True
+                material.use_backface_culling_shadow = True
+                links.new(tex_image.outputs["Color"], output.inputs["Surface"])
+
+            tolerance = 0.47
+
             if use_color_key:
-                color_key = self.get_color_key(tex_path)
+                color_key4 = self.get_color_key(tex_path)
+                color_key = color_key4[:3]
+
+                if diffuse == '^stromy1.bmp':
+                    tolerance = 1
+
                 if color_key:
-                    # Calculate dynamic threshold (temporary fixed for 91,55,20)
-                    normalized_sum = color_key[0] + color_key[1] + color_key[2]
-                    if diffuse == "2kolo3.bmp":  # Temporary fix
-                        threshold_value = 0.3
-                    else:
-                        threshold_value = 0.015 + 0.45 * normalized_sum
-                    print(f"Calculated threshold for {diffuse}: {threshold_value}")
+                    vec = nodes.new("ShaderNodeVectorMath")
+                    vec.operation = 'DISTANCE'
+                    vec.location = (0, 200)
+                    links.new(tex_image.outputs["Color"], vec.inputs[0])
+                    vec.inputs[1].default_value = color_key # your key RGB
 
-                    # Separate RGB from texture
-                    separate_rgb = nodes.new("ShaderNodeSeparateRGB")
-                    links.new(tex_image.outputs["Color"], separate_rgb.inputs["Image"])
+                    thr = nodes.new("ShaderNodeMath")
+                    thr.operation = 'GREATER_THAN'
+                    thr.inputs[1].default_value = tolerance       # e.g. 0.02
+                    thr.location = (200, 200)
+                    links.new(vec.outputs["Value"], thr.inputs[0])
 
-                    # Distance from color key
-                    math_r = nodes.new("ShaderNodeMath")
-                    math_r.operation = "SUBTRACT"
-                    math_r.inputs[0].default_value = color_key[0]
-                    links.new(separate_rgb.outputs["R"], math_r.inputs[1])
+                    # 2) Feed the mask directly into Principled Alpha
+                    links.new(thr.outputs["Value"], principled.inputs["Alpha"])
 
-                    math_g = nodes.new("ShaderNodeMath")
-                    math_g.operation = "SUBTRACT"
-                    math_g.inputs[0].default_value = color_key[1]
-                    links.new(separate_rgb.outputs["G"], math_g.inputs[1])
+                    # 3) Tell Blender to do a hard clip on your alpha
+                    material.blend_method    = 'CLIP'
+                    material.alpha_threshold = 0.5  # clips anything below 0.5 → transparent
 
-                    math_b = nodes.new("ShaderNodeMath")
-                    math_b.operation = "SUBTRACT"
-                    math_b.inputs[0].default_value = color_key[2]
-                    links.new(separate_rgb.outputs["B"], math_b.inputs[1])
-
-                    # Sum differences
-                    add_rg = nodes.new("ShaderNodeMath")
-                    add_rg.operation = "ADD"
-                    links.new(math_r.outputs["Value"], add_rg.inputs[0])
-                    links.new(math_g.outputs["Value"], add_rg.inputs[1])
-
-                    add_rgb = nodes.new("ShaderNodeMath")
-                    add_rgb.operation = "ADD"
-                    links.new(add_rg.outputs["Value"], add_rgb.inputs[0])
-                    links.new(math_b.outputs["Value"], add_rgb.inputs[1])
-
-                    # Threshold for cutout
-                    threshold = nodes.new("ShaderNodeMath")
-                    threshold.operation = "LESS_THAN"
-                    threshold.inputs[1].default_value = threshold_value
-                    links.new(add_rgb.outputs["Value"], threshold.inputs[0])
-
-                    # Cutout with Mix Shader
-                    transparent = nodes.new("ShaderNodeBsdfTransparent")
-                    mix_shader = nodes.new("ShaderNodeMixShader")
-                    links.new(threshold.outputs["Value"], mix_shader.inputs["Fac"])
-                    links.new(
-                        transparent.outputs["BSDF"], mix_shader.inputs[1]
-                    )  # Transparent when match
-                    links.new(
-                        principled.outputs["BSDF"], mix_shader.inputs[2]
-                    )  # Opaque otherwise
-                    links.new(mix_shader.outputs["Shader"], output.inputs["Surface"])
-
-                    material.blend_method = "CLIP"
-                    material.alpha_threshold = 0.5
-                    print(
-                        f"Applied color key cutout {color_key} to {diffuse} with threshold {threshold_value}"
-                    )
+                    # 4) Finally wire your Principled BSDF to the output
+                    link_principled_to_output()
                 else:
-                    print(
-                        f"Warning: No color key found for {diffuse}, using standard diffuse"
-                    )
-                    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+                    print(f"Warning: no color key for {diffuse}")
+                    link_principled_to_output()
             else:
-                links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+                link_principled_to_output()
+        else:
+            link_principled_to_output()
 
+        # --- OPTIONAL ALPHA TEXTURE OVERRIDE ---
         if alpha_tex:
-            alpha_tex_image = nodes.new("ShaderNodeTexImage")
-            alpha_path = f"{self.base_dir}/maps/{alpha_tex}"
-            alpha_tex_image.image = self.get_or_load_texture(alpha_path)
-            links.new(alpha_tex_image.outputs["Color"], principled.inputs["Alpha"])
-            links.new(principled.outputs["BSDF"], output.inputs["Surface"])
-            material.blend_method = "BLEND"
+            alpha_path     = f"{self.base_dir}/maps/{alpha_tex}"
+            alpha_tex_node = nodes.new("ShaderNodeTexImage")
+            alpha_tex_node.image = self.get_or_load_texture(alpha_path)
+            alpha_tex_node.location = (-400, -200)
+
+            # Feed alpha into Principled and switch to BLEND mode
+            links.new(alpha_tex_node.outputs["Color"], principled.inputs["Alpha"])
+            material.blend_method = 'BLEND'
+
+            # If you hadn’t already wired Principled→Output, do so now:
+            # link_principled_to_output()
+
 
     def deserialize_material(self, f):
-        mat = bpy.data.materials.new("material")
         flags = struct.unpack("<I", f.read(4))[0]
 
         use_diffuse_tex = (flags & 0x00040000) != 0
@@ -309,23 +298,28 @@ class The4DSImporter:
             self.read_string(f)  # Skip env texture name
 
         diffuse_tex = self.read_string(f).lower()
-        if diffuse_tex:
-            mat.name = diffuse_tex
+        mat_name = diffuse_tex if diffuse_tex else "material"
 
-        alpha_tex = ""
-        if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha texture
-            alpha_tex = self.read_string(f).lower()
+        # Reuse existing material if it exists
+        mat = bpy.data.materials.get(mat_name)
+        if mat is None:
+            mat = bpy.data.materials.new(name=mat_name)
 
-        if flags & 0x04000000:  # Animated diffuse
-            struct.unpack("<I", f.read(4))  # Frames
-            f.read(2)  # Skip
-            struct.unpack("<I", f.read(4))  # Frame length
-            f.read(8)  # Skip
+            alpha_tex = ""
+            if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha texture
+                alpha_tex = self.read_string(f).lower()
 
-        self.set_material_data(
-            mat, diffuse_tex, alpha_tex, emission, alpha, metallic, use_color_key
-        )
+            if flags & 0x04000000:  # Animated diffuse
+                struct.unpack("<I", f.read(4))  # Frames
+                f.read(2)  # Skip
+                struct.unpack("<I", f.read(4))  # Frame length
+                f.read(8)  # Skip
+
+            self.set_material_data(
+                mat, diffuse_tex, alpha_tex, emission, alpha, metallic, use_color_key
+            )
         return mat
+
 
     def build_armature(self):
         if not self.armature or not self.joints:

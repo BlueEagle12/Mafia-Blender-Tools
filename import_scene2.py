@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Mafia Scene2.bin Importer",
     "author": "Blue Eagle",
-    "version": (1, 0),
+    "version": (1, 3),
     "blender": (4, 0, 0),
     "location": "File > Import > Mafia Scene2 (.bin)",
     "category": "Import-Export",
@@ -10,23 +10,78 @@ bl_info = {
 import os
 import struct
 import bpy
-from mathutils import Quaternion, Matrix, Vector
+import math
+from mathutils import Quaternion
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
+
+# Constants from C# enums
+CHUNK_ROOT_TYPES      = (0x4000, 0xAE20)
+CHUNK_OBJECT_TYPES    = (0x4010, 0xAE21)
+
+PROP_TYPE_NORMAL      = 0x4011
+PROP_NAME             = 0x0010
+PROP_NAME_SPECIAL     = 0xAE23
+PROP_MODEL            = 0x2012
+PROP_POSITION         = 0x0020
+PROP_PARENT           = 0x4020
+PROP_ROTATION         = 0x0022
+PROP_SCALE            = 0x002D
+PROP_LIGHT_MAIN       = 0x4040
+
+LIGHT_TYPE            = 0x4041
+LIGHT_COLOR           = 0x0026
+LIGHT_POWER           = 0x4042
+LIGHT_RANGE           = 0x4044
+LIGHT_UNKNOWN         = 0x4043
+
+
+# ObjectType values
+OBJ_NONE              = 0x00
+OBJ_LIGHT             = 0x02
+OBJ_CAMERA            = 0x03
+OBJ_SOUND             = 0x04
+OBJ_MODEL             = 0x09
+OBJ_OCCLUDER          = 0x0C
+OBJ_SECTOR            = 0x99
+OBJ_LIGHTMAP          = 0x9A
+OBJ_SCRIPT            = 0x9B
+
+# Lookup tables
+OBJECT_TYPES = {
+    OBJ_NONE:     "None",
+    OBJ_LIGHT:    "Light",
+    OBJ_CAMERA:   "Camera",
+    OBJ_SOUND:    "Sound",
+    OBJ_MODEL:    "Model",
+    OBJ_OCCLUDER: "Occluder",
+    OBJ_SECTOR:   "Sector",
+    OBJ_LIGHTMAP: "Lightmap",
+    OBJ_SCRIPT:   "Script",
+}
+
+LIGHT_TYPES = {
+    0x01: 'POINT',
+    0x02: 'SPOT',
+    0x03: 'SUN',
+    0x04: 'AREA',
+    0x05: 'POINT',
+    0x06: 'POINT',
+    0x08: 'AREA',
+}
 
 try:
     from .import_4ds import The4DSImporter
 except ImportError:
     from import_4ds import The4DSImporter
 
-# Subclass that conditionally skips armature build on non-uniform scaling
 class Scene2Importer(The4DSImporter):
     def build_armature(self):
         try:
             super().build_armature()
         except NotImplementedError as e:
             if "Non-uniform armature scaling" in str(e):
-                print(f"Scene2Importer: skipping armature build due to non-uniform scale ({e})")
+                print(f"Scene2Importer: skipping armature due to non-uniform scale ({e})")
                 return
             raise
 
@@ -36,247 +91,337 @@ class Scene2Prefs(bpy.types.AddonPreferences):
         name="Mafia Root Folder",
         subtype='DIR_PATH',
         default="",
-        description="This will be your Mafia Root Folder."
+        description="Optional root folder for .4DS files"
     )
-
     def draw(self, context):
         self.layout.prop(self, "maps_folder")
-
-
-# World consts
-WORLD_Mission = 0x4c53
-WORLD_Meta = 0x0001
-WORLD_Unknown_File = 0xAFFF
-WORLD_Unknown_File2 = 0x3200
-WORLD_Fov = 0x3010
-WORLD_ViewDistance = 0x3011
-WORLD_ClippingPlanes = 0x3211
-WORLD_World = 0x4000
-WORLD_SpecialWorld = 0xAE20
-WORLD_Entities = 0xAE20
-WORLD_Init = 0xAE50
-WORLD_Object = 0x4010
-WORLD_SpecialObject = 0xAE21
-        
-# Scene consts
-SCENE_TypeSpecial = 0xAE22
-SCENE_TypeNormal = 0x4011
-SCENE_Position = 0x0020
-SCENE_Rotation = 0x0022
-SCENE_Position2 = 0x002C
-SCENE_Scale = 0x002D
-SCENE_Parent = 0x4020
-SCENE_Hidden = 0x4033
-SCENE_Name = 0x0010
-SCENE_Name_Special = 0xAE23
-SCENE_Model = 0x2012
-SCENE_Light_Main = 0x4040
-SCENE_Light_Type = 0x4041
-SCENE_Light_Color = 0x0026
-SCENE_Light_Power = 0x4042
-SCENE_Light_Unknown = 0x4043
-SCENE_Light_Range = 0x4044
-SCENE_Light_Flags = 0x4045
-SCENE_Light_Sector = 0x4046
-SCENE_SpecialData = 0xAE24
-
-
-
 
 class ImportScene2(bpy.types.Operator, ImportHelper):
     bl_idname = "import_scene.scene2"
     bl_label = "Import Scene2.bin"
     bl_options = {'REGISTER', 'UNDO'}
-    filename_ext = "scene2.bin"
+
+    filename_ext = ".bin"
     filter_glob: StringProperty(default="*.bin", options={'HIDDEN'})
 
-    def read_header(self, f):
-        raw = f.read(6)
-        return struct.unpack('<HI', raw)
+    def execute(self, context):
+        prefs = context.preferences.addons[__name__].preferences
+        maps_dir = bpy.path.abspath(prefs.maps_folder) if prefs.maps_folder else None
+        imp_dir = os.path.dirname(self.filepath)
+        self.search_dirs = [d for d in (maps_dir, imp_dir) if d]
+        self.scene = context.scene
+        self.wm = context.window_manager
+        self.name_to_empty = {}
+        self.parent_links  = []
 
-    def read_cstr(self, f):
+        self.queue = self._parse_scene2(self.filepath)
+        self.total = len(self.queue)
+        
+        if not self.queue:
+            self.report({'WARNING'}, "No entities found in scene2.bin")
+            return {'CANCELLED'}
+
+        self.wm.progress_begin(0, self.total)
+        bpy.app.timers.register(self._step_import)
+        return {'RUNNING_MODAL'}
+
+    def _step_import(self):
+        if not self.queue:
+            self._apply_parenting()
+            self.wm.progress_end()
+            return None
+
+        task = self.queue.pop(0)
+        done = self.total - len(self.queue)
+
+        if task['obj_type'] == OBJ_LIGHT:
+            self._create_light(task)
+        else:
+            self._import_model(task)
+
+        self.wm.progress_update(done)
+        #bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+        return 0.01
+
+    def _import_model(self, obj):
+
+        model_name = obj.get('model')
+        if not model_name:
+            # nothing to import here
+            return
+    
+        path = self._find_mesh(obj['model'])
+        if not path:
+            self.report({'WARNING'}, f"Missing mesh: {obj['model']}")
+            return
+        
+
+        before = set(self.scene.objects)
+        imp4ds = Scene2Importer(path)
+        imp4ds.import_file()
+        for new in set(self.scene.objects) - before:
+            if new.parent is None:
+                empty = bpy.data.objects.new(obj['name'] + "_root", None)
+                self.scene.collection.objects.link(empty)
+                new.parent = empty
+                empty.location        = obj['pos']
+                empty.rotation_euler  = obj['rot']
+                empty.scale           = obj['scale']
+                self.name_to_empty[obj['name']] = empty
+
+                pName = obj.get('parent_name')
+                if pName and pName != "Primary sector":
+                    self.parent_links.append((empty, pName))
+
+    def _create_light(self, lt):
+        # Ensure we have a light entry
+        name = lt.get('name', 'Light')
+
+        code = lt.get('light_type')
+
+        if 'light_type' not in lt:
+            return
+        
+        # Map Mafia light code to Blender light type string
+        ltype = LIGHT_TYPES.get(code, 'POINT')
+
+        # Create new light data block
+        ld = bpy.data.lights.new(name=name, type=ltype)
+
+        # Safely assign color, intensity (energy), and range
+        color = lt.get('color')
+        if color is None:
+            color = (1.0, 1.0, 1.0)
+        ld.color = color
+
+        power = lt.get('power')
+
+        if ltype == "SUN":
+            ld.energy = (power if power is not None else 250.0)*5
+        elif ltype == "POINT":
+            ld.energy = (power if power is not None else 250.0)*100
+        else:
+            ld.energy = (power if power is not None else 250.0)*100
+
+        rng = lt.get('range')
+        if rng is not None:
+            ld.cutoff_distance = rng
+
+        if ltype == "SPOT":
+            angle = lt.get('angle')
+            if angle is not None:
+                ld.spot_size = angle
+
+        # Create the light object and link it
+        lo = bpy.data.objects.new(name, ld)
+        pos = lt.get('pos')
+        if pos:
+            lo.location = pos
+
+        rot = lt.get('rot')
+        if rot:
+            lo.rotation_euler = rot
+            lo.rotation_euler.x += math.radians(90)
+
+        self.scene.collection.objects.link(lo)
+
+        return None
+
+    def _find_mesh(self, name):
+        for d in self.search_dirs:
+            f = os.path.join(d, name)
+            if os.path.isfile(f):
+                return f
+        for d in self.search_dirs:
+            for root, _, files in os.walk(d):
+                for fi in files:
+                    if fi.lower() == name.lower():
+                        return os.path.join(root, fi)
+        return None
+
+    def _read_header(self, f):
+        return struct.unpack('<HI', f.read(6))
+
+    def _read_cstr(self, f):
         data = bytearray()
         while True:
             b = f.read(1)
             if not b or b == b'\x00': break
             data += b
-        try:
-            return data.decode('utf-8')
-        except:
-            return data.decode('cp1250', errors='ignore')
+        return data.decode('utf-8', errors='ignore')
 
-    def execute(self, context):
-        prefs = context.preferences.addons[__name__].preferences
-        # Prepare search directories: maps_folder and folder of the .bin file
-        maps_dir = bpy.path.abspath(prefs.maps_folder) if prefs.maps_folder else None
-        import_dir = os.path.dirname(self.filepath)
-        search_dirs = [d for d in (maps_dir, import_dir) if d]
+    def _parse_scene2(self, path):
+        tasks = []
+        with open(path, 'rb') as f:
+            _, size = self._read_header(f)
+            self._recurse(f, 6, size, tasks)
+        return tasks
 
-        def find_mesh(model_name):
-            # direct lookup
-            for sd in search_dirs:
-                candidate = os.path.join(sd, model_name)
-                if os.path.isfile(candidate):
-                    return candidate
-            # recursive search
-            for sd in search_dirs:
-                for root, _, files in os.walk(sd):
-                    for f in files:
-                        if f.lower() == model_name.lower():
-                            return os.path.join(root, f)
-            return None
-
-        scene = context.scene
+    def _recurse(self, f, start, end, tasks):
+        ptr = start
+        while ptr + 6 <= end:
+            f.seek(ptr)
+            ctype, csize = self._read_header(f)
+            dstart, dend = ptr + 6, ptr + csize
+            if ctype in CHUNK_ROOT_TYPES:
+                self._recurse(f, dstart, dend, tasks)
+            elif ctype in CHUNK_OBJECT_TYPES:
+                ent = self._extract_props(f, dstart, dend)
+                tasks.append(ent)
+            ptr += csize
 
 
-        with open(self.filepath, 'rb') as f:
-            top_type, top_size = self.read_header(f)
+    def _apply_parenting(self):
+        print('Applying Parenting')
 
-            parsed_objects = []
+        for child, parent_name in self.parent_links:
+            parent = self.name_to_empty.get(parent_name)
 
-            def parse_chunk(start, end):
-                ptr = start
-                while ptr + 6 <= end:
-                    f.seek(ptr)
-                    htype, hsize = self.read_header(f)
-                    data_start = ptr + 6
-                    data_end = ptr + hsize
+            if parent is None:
+                parent = self.scene.objects.get(parent_name)
+                if parent:
+                    print(f"Found scene object for parent '{parent_name}'")
 
-                    if htype in (WORLD_World, WORLD_SpecialWorld):
-                        parse_chunk(data_start, data_end)
+            if child and parent:
+                child.parent = parent
+                print(parent_name + ' Parented')
+            else:
+                self.report(
+                    {'WARNING'},
+                    f"Cannot parent '{child.name}' under '{parent_name}'"
+                )
 
-                    elif htype in (WORLD_Object, WORLD_SpecialObject):
-                        props_ptr = data_start
-                        obj = {'pos': None, 'rot': None,'scale': None, 'model': None}
+    def _read_light_props(self, f, start, end, props):
+        ptr = start
+        while ptr + 6 <= end:
+            f.seek(ptr)
+            ptype, psize = struct.unpack('<HI', f.read(6))
+            f.seek(ptr + 6)
 
-                        while props_ptr + 6 <= data_end:
-                            f.seek(props_ptr)
-                            ptype, psize = self.read_header(f)
-                            dstart = props_ptr + 6
+            if ptype == LIGHT_TYPE:
+                props['light_type'] = struct.unpack('<I', f.read(4))[0]
+                props['obj_type'] = OBJ_LIGHT
 
-                            if ptype in (SCENE_Name, SCENE_Name_Special):
-                                f.seek(dstart)
-                                obj['name'] = self.read_cstr(f)
-                            elif ptype == SCENE_Model:
-                                f.seek(dstart)
-                                m = self.read_cstr(f).lower().replace('.i3d', '.4ds')
-                                obj['model'] = m
-                            elif ptype == SCENE_Position:
-                                f.seek(dstart)
-                                pos = struct.unpack('<3f', f.read(12))
-                                obj['pos'] = (pos[0],pos[2],pos[1])
-                            elif ptype == SCENE_Scale:
-                                f.seek(dstart)
-                                scale = struct.unpack('<3f', f.read(12))
-                                obj['scale'] = (scale[0],scale[2],scale[1])
-                            elif ptype == SCENE_Parent:
-                                f.seek(dstart)
-                                obj['parent'] = struct.unpack('<H', f.read(2))[0]
-                            elif ptype == SCENE_Rotation:
-                                f.seek(dstart)
-                                q = struct.unpack('<4f', f.read(16))
-                                quat = Quaternion((q[0], q[1], q[3], q[2]))
-                                obj['rot'] = quat.to_euler('XYZ')
-                                obj['quat'] = quat
-
-                            props_ptr += psize
+            elif ptype == LIGHT_COLOR:
+                props['color'] = struct.unpack('<3f', f.read(12))
+            elif ptype == LIGHT_POWER:
+                props['power'] = struct.unpack('<f', f.read(4))[0]
+            elif ptype == LIGHT_RANGE:
+                near = struct.unpack('<f', f.read(4))[0]
+                far  = struct.unpack('<f', f.read(4))[0]
+                props['range'] = far
+            elif ptype == LIGHT_UNKNOWN:
+                unk1 = struct.unpack('<f', f.read(4))[0]
+                angle  = struct.unpack('<f', f.read(4))[0]
+                props['angle'] = angle
 
 
-                        #frame_index = len(parsed_objects)
-                        parsed_objects.append(obj)
+            ptr += psize
 
-                        if obj.get('model'):
-                            mesh_path = find_mesh(obj['model'])
-                            if not mesh_path:
-                                self.report({'WARNING'}, f"Missing mesh: {obj['model']}")
-                            else:
+    def _extract_props(self, f, start, end):
+        # Clean, readable extraction of chunk properties
+        props = {
+            'name':       None,
+            'model':      None,
+            'pos':        None,
+            'rot':        None,
+            'scale':      None,
+            'light_type': None,
+            'color':      None,
+            'power':      None,
+            'range':      None,
+            'angle':      None,
+            'parent_name':None,
+            'obj_type':   OBJ_MODEL
+        }
 
-
-                                scale_mat = Matrix.Diagonal(obj['scale']).to_4x4()
-                                rot_mat = Quaternion(obj['quat']).to_matrix().to_4x4()
-                                trans_mat = Matrix.Translation(obj['pos'])
-
-                                transform_mat = trans_mat @ rot_mat @ scale_mat
-                                
-                                obj['localTransform'] = transform_mat
-
-                                before_objs = set(scene.objects)
-                                imp = Scene2Importer(mesh_path)
-
-                                dir_path = os.path.dirname(mesh_path)  # Parent directory
-                                parent_dir = os.path.basename(dir_path).lower()  # e.g., "models" or "Intro"
-                                grandparent_path = os.path.dirname(dir_path)  # Grandparent directory
-                                grandparent_dir = os.path.basename(grandparent_path).lower()  # e.g., "Mafia" or "missions"
-
-                                if parent_dir == "models":
-                                    imp.base_dir = grandparent_path  # Two levels up: E:/Mafia
-                                elif grandparent_dir == "missions":
-                                    imp.base_dir = os.path.dirname(
-                                        grandparent_path
-                                    )  # Three levels up: E:/Mafia
-                                else:
-                                    # Fallback: assume two levels up (models-like structure)
-                                    imp.base_dir = os.path.dirname(os.path.dirname(mesh_path))
+        ptr = start
+        while ptr + 6 <= end:
+            f.seek(ptr)
+            ptype, psize = self._read_header(f)
+            f.seek(ptr + 6)
 
 
-                                imp.import_file()
-                                new_objs = set(scene.objects) - before_objs
-                                if not new_objs:
-                                    self.report({'WARNING'}, f"No objects imported for {mesh_path}")
-                                for new_obj in new_objs:
-                                    # only apply transforms if it isn’t parented
+            if ptype == PROP_PARENT:
+                # read the nested “object” header inside Parent
+                sub_type, sub_size = self._read_header(f)
+                sub_start = ptr + 6
+                sub_end   = ptr + psize
+                scan = sub_start
+                # scan sub-chunks for a Name property
+                while scan + 6 <= sub_end:
+                    f.seek(scan)
+                    stype, ssize = self._read_header(f)
+                    f.seek(scan + 6)
+                    if stype in (PROP_NAME, PROP_NAME_SPECIAL):
+                        props['parent_name'] = self._read_cstr(f)
+                        break
+                    scan += ssize
 
-                                    if new_obj.parent is None:
-                                        empty = bpy.data.objects.new(obj['name'] + "_root", None)
-                                        new_obj.parent = empty
-                                        new_obj['base'] = empty
+                ptr += psize
+                continue
 
-                                        empty.location        = obj['pos']
-                                        empty.scale           = obj['scale']
-                                        empty.rotation_euler  = obj['rot']
+            if ptype in (PROP_NAME, PROP_NAME_SPECIAL):
+                props['name'] = self._read_cstr(f)
 
-                                        if 'bpy_objs' not in obj:
-                                            obj['bpy_objs'] = []
-                                        obj['bpy_objs'].append(empty)
+            elif ptype == PROP_MODEL:
+                props['model'] = (
+                    self._read_cstr(f)
+                    .lower()
+                    .replace('.i3d', '.4ds')
+                )
 
-                    ptr += hsize
+            elif ptype == PROP_POSITION:
+                x, y, z = struct.unpack('<3f', f.read(12))
+                props['pos'] = (x, z, y)
 
-            parse_chunk(6, top_size)
+            elif ptype == PROP_ROTATION:
+                q = struct.unpack('<4f', f.read(16))
+                props['rot'] = (
+                    Quaternion((q[0], q[1], q[3], q[2]))
+                    .to_euler('XYZ')
+                )
+            elif ptype == PROP_SCALE:
+                sx, sy, sz = struct.unpack('<3f', f.read(12))
+                props['scale'] = (sx, sz, sy)
 
-        print("\n--- Scene2 Parenting Results ---")
+            elif ptype == PROP_TYPE_NORMAL:
+                code = struct.unpack('<I', f.read(4))[0]
+                props['obj_type'] = code
+
+            elif ptype == PROP_LIGHT_MAIN:
+                sub_ptr = ptr + 6
+                end_inner = ptr + 6 + psize
+                while sub_ptr + 6 <= end_inner:
+                    f.seek(sub_ptr)
+                    raw = f.read(6)
+                    if len(raw) != 6:
+                        print(f"[WARN] Truncated light block at {sub_ptr}")
+                        break
+                    sub_type, sub_size = struct.unpack('<HI', raw)
+                    self._read_light_props(f,ptr + 6 ,ptr + psize ,props)
+                    sub_ptr += sub_size
+
+            ptr += psize
+
+        return props
 
 
-        for idx, obj in enumerate(parsed_objects):
-            print(f"Object: {obj['model']} ")
+def menu_func(self, context):
+    self.layout.operator(
+        ImportScene2.bl_idname,
+        text="Mafia Scene2 (.bin)"
+    )
 
-        for idx, obj in enumerate(parsed_objects):
-            if 'parent' in obj and obj['parent'] != 0xFFFF:
-
-                print(f"Object: {obj['name']} | Parent Index: {obj['parent']}")
-
-                try:
-                    parent_objs = parsed_objects[obj['parent']].get('bpy_objs', [])
-                    child_objs = obj.get('bpy_objs', [])
-
-                    if parent_objs and child_objs:
-                        for child in child_objs:
-                            child.parent = parent_objs[0]
-                except IndexError:
-                    self.report({'WARNING'}, f"Invalid parent index {obj['parent']} for object {idx}")
-
-        return {'FINISHED'}
-
-def menu_func_import(self, context):
-    self.layout.operator(ImportScene2.bl_idname, text="Mafia Scene2 (.bin)")
 
 def register():
     bpy.utils.register_class(Scene2Prefs)
     bpy.utils.register_class(ImportScene2)
-    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func)
 
 
 def unregister():
-    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.utils.unregister_class(ImportScene2)
     bpy.utils.unregister_class(Scene2Prefs)
 
