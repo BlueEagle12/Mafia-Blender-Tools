@@ -2,7 +2,7 @@
 
 **Version:** 1.0  
 **Blender:** 4.0+  
-**Author:** Blue Eagle **Sev3n** & **Grok 3 (xAI)**  
+**Author:** Blue Eagle & **Sev3n** 
 
 ---
 
@@ -21,7 +21,6 @@ This Blender add-on lets you import:
 - **Import `.4DS` meshes** with materials and textures  
 - **Parse `scene2.bin`** to recreate positions, rotations, scales  
 - **Automatic dummy parenting**: each mesh gets an Empty named `<object_name>_root` with correct transform  
-- **Progress reporting** and responsive UI (via Blender’s progress bar)  (TODO)
 
 ---
 
@@ -31,13 +30,15 @@ This Blender add-on lets you import:
 2. In Blender, go to **Edit → Preferences → Add-ons → Install…**  
 3. Select the `import_scene2.py` file (or the ZIP archive).  
 4. Enable **“Mafia Scene2 (.bin) Importer”**.  
-5. (Optional) Under **Add-on Preferences**, set **Mafia Root Folder** to your game install folder for faster mesh lookup.
+5. Under **Add-on Preferences**, set **Mafia Root Folder** to your game install folder for mesh lookup
 
 ## Usage
 
 1. **File → Import → Mafia Scene2 (.bin)**  
 2. Navigate to your `scene2.bin` and click **Import**.  
 3. Imported meshes will appear parented under Empties named `<object_name>_root`.
+
+- **Scene2.bin parsing** & Blender integration by **Blue Eagle**  
 
 ---
 
@@ -54,6 +55,8 @@ This Blender add-on lets you import:
 2. Navigate to your `.4ds` and click **Import**.  
 3. Imported meshes will appear under their interal names.
 
+NOTICE – 4DS Importer: This importer was developed with partial assistance from a large language model. Final implementation and testing were performed by a human to ensure functionality and accuracy.
+- **4DS Importer** by **Sev3n** & **Grok 3 (xAI)**
 ---
 
 ## API / Scripting
@@ -64,29 +67,15 @@ If you want to hook into the importer programmatically:
   ImportScene2(filepath="C:\path\to\scene2.bin")
 ```
 
----
-
-## Credits & License
-
-- **4DS Importer** by **Sev3n** & **Grok 3 (xAI)**  
-- **Scene2.bin parsing** & Blender integration by **Blue Eagle**  
-
-Licensed under the MIT License. See [LICENSE](./LICENSE) for details.
-
----
 
 ## Troubleshooting
 
 - **Missing meshes?**  
-  Ensure your “Mafia Root Folder” preference points to the parent of the folder containing `.4DS` files.  
-- **Blender freezes?**  
-  Upgrade to Blender 4.0+ and ensure the progress bar is visible.  
+  Ensure your “Mafia Root Folder” preference points to the parent of the folder containing `.4DS` files.   
 
 ---
 
 ## Todo
 
-- Progress bar
 - cache.bin importer
 
-Enjoy importing your Mafia 1 worlds into Blender!
