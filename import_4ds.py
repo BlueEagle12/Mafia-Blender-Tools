@@ -6,6 +6,7 @@ from mathutils import Quaternion, Matrix, Vector
 from math import radians
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
+import tempfile
 
 class Import4DSPrefs(bpy.types.AddonPreferences): ## Optional
     bl_idname = __name__
@@ -170,6 +171,71 @@ class The4DSImporter:
         except Exception as e:
             print(f"Warning: Could not read color key from {filepath}: {e}")
         return None
+    
+
+    def get_bmp_palette_and_indices(self, filepath):
+        palette = []
+        indices = []
+        try:
+            with open(filepath, "rb") as f:
+                f.seek(14)
+                dib_size = struct.unpack("<I", f.read(4))[0]
+
+                if dib_size != 40:
+                    print("Unsupported DIB header size.")
+                    return None, None
+
+                f.seek(10)
+                pixel_data_offset = struct.unpack("<I", f.read(4))[0]
+
+                f.seek(18)
+                width = struct.unpack("<I", f.read(4))[0]
+                height = struct.unpack("<I", f.read(4))[0]
+
+                f.seek(28)
+                bpp = struct.unpack("<H", f.read(2))[0]
+                if bpp != 8:
+                    print("Not an 8-bit indexed BMP.")
+                    return None, None
+
+                f.seek(54)
+                palette_size = (pixel_data_offset - 54) // 4
+                for _ in range(palette_size):
+                    b, g, r, _ = struct.unpack("<BBBB", f.read(4))
+                    palette.append((r, g, b))
+
+                row_size = ((width + 3) // 4) * 4
+                f.seek(pixel_data_offset)
+
+                for _ in range(height):
+                    row = list(f.read(row_size))[:width]
+                    indices.insert(0, row)  # BMP rows are bottom-up
+
+                return palette, indices
+        except Exception as e:
+            print(f"Warning: Could not read palette from {filepath}: {e}")
+            return None, None
+
+
+    def create_alpha_image(self, filepath, transparent_index, image_name="AlphaMask"):
+
+        palette, indices = self.get_bmp_palette_and_indices(filepath)
+
+        height = len(indices)
+        width = len(indices[0])
+
+        image = bpy.data.images.new(name=image_name, width=width, height=height, alpha=True)
+        pixels = []
+
+        for row in reversed(indices):
+            for index in row:
+                val = 0.0 if index == transparent_index else 1.0
+                pixels.extend([val, val, val, 1.0])
+
+        image.pixels = pixels
+        image.pack()
+        return image
+
 
     def get_or_load_texture(self, filepath):
         # Normalize filepath for consistent lookup (lowercase, OS separators)
@@ -206,9 +272,9 @@ class The4DSImporter:
 
         # Configure principled inputs
         principled.inputs["Emission Color"].default_value = (*emission, 1.0)
-        principled.inputs["Metallic"       ].default_value = metallic
+        principled.inputs["Metallic"].default_value = metallic
         principled.inputs["Specular IOR Level"].default_value = 0.0
-        principled.inputs["Roughness"      ].default_value = 0.0
+        principled.inputs["Roughness"].default_value = 0.0
 
         # Helper to wire principled → output if nothing else takes that slot
         def link_principled_to_output():
@@ -221,49 +287,73 @@ class The4DSImporter:
             tex_image = nodes.new("ShaderNodeTexImage")
             tex_image.image = self.get_or_load_texture(tex_path)
             tex_image.location = (-400, 200)
-            links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
+
+            tex_image.interpolation = 'Closest'
 
             if "sky" in diffuse.lower():
                 material.use_backface_culling = True
                 material.use_backface_culling_shadow = True
                 links.new(tex_image.outputs["Color"], output.inputs["Surface"])
-
-            tolerance = 0.47
-
-            if use_color_key:
-                color_key4 = self.get_color_key(tex_path)
-                color_key = color_key4[:3]
-
-                if diffuse == '^stromy1.bmp':
-                    tolerance = 1
-
-                if color_key:
-                    vec = nodes.new("ShaderNodeVectorMath")
-                    vec.operation = 'DISTANCE'
-                    vec.location = (0, 200)
-                    links.new(tex_image.outputs["Color"], vec.inputs[0])
-                    vec.inputs[1].default_value = color_key # your key RGB
-
-                    thr = nodes.new("ShaderNodeMath")
-                    thr.operation = 'GREATER_THAN'
-                    thr.inputs[1].default_value = tolerance       # e.g. 0.02
-                    thr.location = (200, 200)
-                    links.new(vec.outputs["Value"], thr.inputs[0])
-
-                    # 2) Feed the mask directly into Principled Alpha
-                    links.new(thr.outputs["Value"], principled.inputs["Alpha"])
-
-                    # 3) Tell Blender to do a hard clip on your alpha
-                    material.blend_method    = 'CLIP'
-                    material.alpha_threshold = 0.5  # clips anything below 0.5 → transparent
-
-                    # 4) Finally wire your Principled BSDF to the output
-                    link_principled_to_output()
-                else:
-                    print(f"Warning: no color key for {diffuse}")
-                    link_principled_to_output()
             else:
-                link_principled_to_output()
+                
+                links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
+
+                tolerance = 0.4 # Sweet spot apparently
+
+                if use_color_key:
+                    color_key4 = self.get_color_key(tex_path)
+                    color_key = color_key4[:3]
+
+                    preAlphaMap = False
+
+                    if preAlphaMap:
+                        alpha_map = self.create_alpha_image(tex_path,0) # Use a premade alpha map, more complicated but accurate.
+                    else:
+                        alpha_map = False
+
+                    if alpha_map:
+
+                        alpha_image = nodes.new("ShaderNodeTexImage")
+                        alpha_image.image = alpha_map
+                        
+                        alpha_image.location = (0, 200)
+                        links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
+                        material.blend_method    = 'CLIP'
+                        material.alpha_threshold = 0.5
+
+                        alpha_image.interpolation = 'Closest'
+
+                        link_principled_to_output()
+                    else:
+
+                        if color_key:
+                            vec = nodes.new("ShaderNodeVectorMath")
+                            vec.operation = 'DISTANCE'
+                            vec.location = (0, 200)
+                            links.new(tex_image.outputs["Color"], vec.inputs[0])
+                            vec.inputs[1].default_value = color_key # your key RGB
+
+                            thr = nodes.new("ShaderNodeMath")
+                            thr.operation = 'GREATER_THAN'
+                            thr.inputs[1].default_value = tolerance       # e.g. 0.02
+                            thr.location = (200, 200)
+                            links.new(vec.outputs["Value"], thr.inputs[0])
+
+                            # 2) Feed the mask directly into Principled Alpha
+                            links.new(thr.outputs["Value"], principled.inputs["Alpha"])
+
+                            # 3) Tell Blender to do a hard clip on your alpha
+                            material.blend_method    = 'CLIP'
+                            material.alpha_threshold = 0.5  # clips anything below 0.5 → transparent
+
+                            # 4) Finally wire your Principled BSDF to the output
+                            link_principled_to_output()
+                        else:
+                            print(f"Warning: no color key for {diffuse}")
+                            link_principled_to_output()
+                else:
+                    link_principled_to_output()
+
         else:
             link_principled_to_output()
 
@@ -1209,10 +1299,15 @@ class The4DSImporter:
             # Post-process: Apply deferred parenting
             self.apply_deferred_parenting()
 
-            is_animated = struct.unpack("<B", f.read(1))[0]
-            if is_animated:
-                print("Note: Animation flag detected (not implemented)")
-
+            data = f.read(1)
+            if len(data) < 1:
+                print("Warning: Unexpected EOF while reading animation flag.")
+                is_animated = 0
+            else:
+                is_animated = struct.unpack("<B", data)[0]
+                if is_animated:
+                    print("Note: Animation flag detected (not implemented)")
+                    
     def apply_deferred_parenting(self):
         print("Applying deferred parenting...")
         print(f"Frames map: {self.frames_map}")
