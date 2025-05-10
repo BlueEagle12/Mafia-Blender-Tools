@@ -268,6 +268,7 @@ def import_model(obj, collection, name_to_empty, parent_links):
             if obj.get('hidden'):
                 target_obj.hide_viewport = True
                 target_obj.hide_render = True
+        return
 
     cache_result = model_cache.get(model_name)
     empty = None
