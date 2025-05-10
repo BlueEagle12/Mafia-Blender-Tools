@@ -450,6 +450,6 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     unregister_props()
-    bpy.utils.register_class(MafiaPrefs)
+    bpy.utils.unregister_class(MafiaPrefs)
     bpy.utils.unregister_class(ImportMafiaBIN)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
