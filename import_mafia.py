@@ -4,6 +4,7 @@
 
 import os
 import bpy
+import bmesh
 import gc
 import math
 from bpy.props import StringProperty, IntProperty
@@ -241,6 +242,8 @@ def _step_import(self, on_complete=None, collection=None):
 
     return 0.01
 
+
+
 # -- Import and instance 4DS model --
 def import_model(obj, collection, name_to_empty, parent_links):
     prefs = bpy.context.preferences.addons[__name__].preferences
@@ -309,6 +312,7 @@ def import_model(obj, collection, name_to_empty, parent_links):
             return
 
     for new in duplicates:
+
         to_link.append((collection, new))
         if new is not empty:
             if obj['hidden']:

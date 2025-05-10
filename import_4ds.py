@@ -597,6 +597,68 @@ class The4DSImporter:
         print_debug(f"[DONE] Skinning complete for {mesh.name} ({total_vertices} verts total)")
 
 
+
+    def apply_average_face_area_normals(self, bm, mesh_data, angle_limit=60.0):
+        bm.faces.ensure_lookup_table()
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.normal_update()
+
+        # Step 1: Mark sharp edges
+        sharp_radians = radians(angle_limit)
+        for e in bm.edges:
+            if not e.is_manifold or len(e.link_faces) != 2:
+                e.smooth = True
+                continue
+
+            f1, f2 = e.link_faces
+            angle = f1.normal.angle(f2.normal)
+            e.smooth = angle <= sharp_radians
+
+        # Step 2: Cache sharp edges
+        sharp_edges = {e for e in bm.edges if not e.smooth}
+
+        # Step 3: Calculate per-loop normals with sharp split awareness
+        loop_normals = []
+        for face in bm.faces:
+            area = face.calc_area()
+            for loop in face.loops:
+                v = loop.vert
+                accum = Vector((0.0, 0.0, 0.0))
+                total_area = 0.0
+
+                # Loop over adjacent faces, skip across sharp edges
+                for linked_face in v.link_faces:
+                    if linked_face == face:
+                        area_contrib = area
+                        face_normal = face.normal
+                    else:
+                        shares_smooth_edge = False
+                        for edge in linked_face.edges:
+                            if edge in face.edges and edge.smooth:
+                                shares_smooth_edge = True
+                                break
+
+                        if not shares_smooth_edge:
+                            continue
+                        area_contrib = linked_face.calc_area()
+                        face_normal = linked_face.normal
+
+                    accum += face_normal * area_contrib
+                    total_area += area_contrib
+
+                final_normal = accum.normalized() if total_area > 0 else Vector((0.0, 0.0, 1.0))
+                loop_normals.append(final_normal)
+
+        # Step 4: Commit BMesh to mesh
+        bm.to_mesh(mesh_data)
+        bm.free()
+        mesh_data.update()
+
+        # Step 5: Apply custom split normals
+        mesh_data.normals_split_custom_set(loop_normals)
+
+
     def deserialize_object(self, f, materials, mesh, mesh_data):
         instance_id = struct.unpack("<H", f.read(2))[0]
         if instance_id > 0:
@@ -647,17 +709,24 @@ class The4DSImporter:
             bm.verts.ensure_lookup_table()
             num_face_groups = struct.unpack("<B", f.read(1))[0]
 
+            uv_layer = bm.loops.layers.uv.new("UVMap")
+            face_uvs = []  # Store UVs per face, to assign by loop later
+
             for _ in range(num_face_groups):
                 num_faces = struct.unpack("<H", f.read(2))[0]
                 slot_idx = len(mesh_data.materials)
-                mesh_data.materials.append(None)  # Placeholder, set after mat_idx
+                mesh_data.materials.append(None)  # Placeholder
 
                 for _ in range(num_faces):
                     idxs = struct.unpack("<3H", f.read(6))
                     idxs_swap = (idxs[0], idxs[2], idxs[1])
                     try:
-                        face = bm.faces.new([vertices[i] for i in idxs_swap])
+                        face_verts = [vertices[i] for i in idxs_swap]
+                        face = bm.faces.new(face_verts)
                         face.material_index = slot_idx
+
+                        # Capture UVs for this face in loop order
+                        face_uvs.append([uvs[i] for i in idxs_swap])
                     except ValueError:
                         print_debug(f"Warning: Duplicate face in '{mesh.name}' at {idxs_swap}")
 
@@ -665,30 +734,30 @@ class The4DSImporter:
                 if 0 < mat_idx <= len(materials):
                     mesh_data.materials[slot_idx] = materials[mat_idx - 1]
 
-            bm.to_mesh(mesh_data)
-            bm.free()
+            # Assign UVs per loop
+            for face, uvs_for_face in zip(bm.faces, face_uvs):
+                for loop, uv in zip(face.loops, uvs_for_face):
+                    loop[uv_layer].uv = uv
 
-            mesh_data.update()
 
-            uv_layer = mesh_data.uv_layers.new(name="UVMap")
-            uv_data = [None] * len(mesh_data.loops)
+            try:
+                bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
+            except Exception as e:
+                print_debug(f"[WARN] remove_doubles failed on {mesh.name}: {e}")
+
+            self.apply_average_face_area_normals(bm, mesh_data)
+
             for poly in mesh_data.polygons:
-                for li in poly.loop_indices:
-                    vi = mesh_data.loops[li].vertex_index
-                    uv_data[li] = uvs[vi]
-
-            flat_uvs = [uv for pair in uv_data for uv in pair]
-            uv_layer.data.foreach_set("uv", flat_uvs)
-
-            for poly in mesh.data.polygons:
                 poly.use_smooth = True
 
             if lod_idx > 0:
                 mesh.hide_set(True)
                 mesh.hide_render = True
+
             mesh.select_set(False)
 
         return num_lods, vertices_per_lod
+
 
 
     def deserialize_singlemesh(self, f, num_lods, mesh):
