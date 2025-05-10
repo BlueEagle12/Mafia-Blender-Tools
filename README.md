@@ -28,17 +28,17 @@ This Blender add-on lets you import:
 
 1. Download or clone this repository.  
 2. In Blender, go to **Edit → Preferences → Add-ons → Install…**  
-3. Select the `import_scene2.py` file (or the ZIP archive).  
-4. Enable **“Mafia Scene2 (.bin) Importer”**.  
-5. Under **Add-on Preferences**, set **Mafia Root Folder** to your game install folder for mesh lookup
+3. Select the `import_scene2.py,import_cache.py,import_mafia.py` files (or the ZIP archive).
+5. Enable **“Mafia Scene2 (.bin) Importer”** **“Mafia Cache (.bin) Importer”** **“Mafia Import Shared”**.  
+6. Under **“Mafia Import Shared”** - **Add-on Preferences**, set **Mafia Root Folder** to your game install folder for mesh lookup
 
 ## Usage
 
-1. **File → Import → Mafia Scene2 (.bin)**  
-2. Navigate to your `scene2.bin` and click **Import**.  
-3. Imported meshes will appear parented under Empties named `<object_name>_root`.
+1. **File → Import → Mafia (.bin)**  
+2. Navigate to your `scene2.bin` or `cache.bin` and click **Import**.  
+3. Imported meshes will appear parented under `<object_name>_root`.
 
-- **Scene2.bin parsing** & Blender integration by **Blue Eagle**  
+- **Scene2.bin & Cache.bin parsing** by **Blue Eagle**  
 
 ---
 
