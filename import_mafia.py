@@ -256,21 +256,18 @@ def import_model(obj, collection, name_to_empty, parent_links):
     if not model_name:
         target_obj = bpy.data.objects.get(obj.get('name'))
         if target_obj:
-            parent = obj.get('parent_name')
-            if obj['parent_name']:
-                if parent and parent != "Primary sector":
-                    print_debug(f"[SCENE] Parent Assigned {parent}")
-                    parent_links.append((target_obj, parent))
-            if obj['rot']:
-                target_obj.rotation_euler = obj['rot']
-            if obj['pos']:
-                target_obj.location = obj['pos']
-            if obj['scale']:
-                target_obj.scale = obj['scale']
-            if obj['hidden']:
+            parent_name = obj.get('parent_name')
+            if parent_name and parent_name != "Primary sector":
+                print_debug(f"[SCENE] Parent Assigned {parent_name}")
+                parent_links.append((target_obj, parent_name))
+
+            target_obj.rotation_euler = obj.get('rot') or target_obj.rotation_euler
+            target_obj.location = obj.get('pos') or target_obj.location
+            target_obj.scale = obj.get('scale') or target_obj.scale
+
+            if obj.get('hidden'):
                 target_obj.hide_viewport = True
                 target_obj.hide_render = True
-        return
 
     cache_result = model_cache.get(model_name)
     empty = None
@@ -282,7 +279,10 @@ def import_model(obj, collection, name_to_empty, parent_links):
         original_to_duplicate = {}
 
         for base in base_objects:
-            dup = base.copy()
+
+            data = base.data
+
+            dup = bpy.data.objects.new("Duplicate_Linked", data)
             original_to_duplicate[base] = dup
             if base is not empty_old:
                 duplicates.append(dup)

@@ -407,38 +407,50 @@ class The4DSImporter:
         flags = struct.unpack("<I", f.read(4))[0]
 
         use_diffuse_tex = (flags & 0x00040000) != 0
-        use_color_key = (flags & 0x20000000) != 0
+        use_color_key   = (flags & 0x20000000) != 0
+
         ambient = struct.unpack("<3f", f.read(12))
         diffuse = struct.unpack("<3f", f.read(12))
         emission = struct.unpack("<3f", f.read(12))
         alpha = struct.unpack("<f", f.read(4))[0]
 
         metallic = 0.0
+        env_tex = ""
         if flags & 0x00080000:  # Env texture
             metallic = struct.unpack("<f", f.read(4))[0]
-            self.read_string(f)  # Skip env texture name
+            env_tex = self.read_string(f)  # Still need to consume the string
 
         diffuse_tex = self.read_string(f).lower()
         mat_name = diffuse_tex if diffuse_tex else "material"
 
-        # Reuse existing material if it exists
+        # Check for existing material
         mat = bpy.data.materials.get(mat_name)
+        if mat:
+            # Skip remaining fields if we're reusing the material
+            if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha tex
+                self.read_string(f)  # Still need to consume it
+            if flags & 0x04000000:  # Animated diffuse
+                f.read(4)  # Frames
+                f.read(2)  # Skip
+                f.read(4)  # Frame length
+                f.read(8)  # Skip
+            return mat
 
+        # New material path
         alpha_tex = ""
-        if (flags & 0x00008000) and (flags & 0x40000000):  # Add effect + alpha texture
+        if (flags & 0x00008000) and (flags & 0x40000000):
             alpha_tex = self.read_string(f).lower()
 
-        if flags & 0x04000000:  # Animated diffuse
-            struct.unpack("<I", f.read(4))  # Frames
+        if flags & 0x04000000:
+            f.read(4)  # Frames
             f.read(2)  # Skip
-            struct.unpack("<I", f.read(4))  # Frame length
+            f.read(4)  # Frame length
             f.read(8)  # Skip
 
-        if mat is None:
-            mat = bpy.data.materials.new(name=mat_name)
-            self.set_material_data(
-                mat, diffuse_tex, alpha_tex, emission, alpha, metallic, use_color_key
-            )
+        mat = bpy.data.materials.new(name=mat_name)
+        self.set_material_data(
+            mat, diffuse_tex, alpha_tex, emission, alpha, metallic, use_color_key
+        )
         return mat
 
     def setWireFrame(self,mesh,showName):
@@ -591,30 +603,34 @@ class The4DSImporter:
             return None, None
 
         vertices_per_lod = []
-
         num_lods = struct.unpack("<B", f.read(1))[0]
-        for lod_idx in range(num_lods):
-            draw = True
 
-            if lod_idx > 0:
-                if self.drawLODS:
-                    name = f"{mesh.name}_lod{lod_idx}"
-                    mesh_data = bpy.data.meshes.new(name)
-                    new_mesh = bpy.data.objects.new(name, mesh_data)
-                    new_mesh.parent = mesh
-                    self.collection.objects.link(new_mesh)
-                    mesh = new_mesh
-                else:
-                    draw = False
+        for lod_idx in range(num_lods):
+            draw = lod_idx == 0 or self.drawLODS
+
+            if lod_idx > 0 and draw:
+                name = f"{mesh.name}_lod{lod_idx}"
+                mesh_data = bpy.data.meshes.new(name)
+                new_mesh = bpy.data.objects.new(name, mesh_data)
+                new_mesh.parent = mesh
+                self.collection.objects.link(new_mesh)
+                mesh = new_mesh
 
             clipping_range = struct.unpack("<f", f.read(4))[0]
             num_vertices = struct.unpack("<H", f.read(2))[0]
-
             vertices_per_lod.append(num_vertices)
-            
-            if draw:
-                bm = bmesh.new()
 
+            if not draw:
+                f.seek((12 + 12 + 8) * num_vertices, 1)  # Skip pos + norm + uv
+                num_face_groups = struct.unpack("<B", f.read(1))[0]
+                for _ in range(num_face_groups):
+                    num_faces = struct.unpack("<H", f.read(2))[0]
+                    f.seek(num_faces * 6, 1)  # Skip indices
+                    f.seek(2, 1)  # Skip mat index
+                continue  # Skip rest of LOD
+
+            # --- DRAWING ---
+            bm = bmesh.new()
             vertices = []
             uvs = []
 
@@ -622,63 +638,58 @@ class The4DSImporter:
                 pos = struct.unpack("<3f", f.read(12))
                 norm = struct.unpack("<3f", f.read(12))
                 uv = struct.unpack("<2f", f.read(8))
-                if draw:
-                    vert = bm.verts.new((pos[0], pos[2], pos[1]))
-                    vert.normal = (norm[0], norm[2], norm[1])
-                    vertices.append(vert)
-                    uvs.append((uv[0], -uv[1]))
 
-            if draw:
-                bm.verts.ensure_lookup_table()
+                vert = bm.verts.new((pos[0], pos[2], pos[1]))
+                vert.normal = (norm[0], norm[2], norm[1])
+                vertices.append(vert)
+                uvs.append((uv[0], -uv[1]))
 
+            bm.verts.ensure_lookup_table()
             num_face_groups = struct.unpack("<B", f.read(1))[0]
-            for group_idx in range(num_face_groups):
-                num_faces = struct.unpack("<H", f.read(2))[0]
 
-                if draw:
-                    mesh_data.materials.append(None)
-                    slot_idx = len(mesh_data.materials) - 1
+            for _ in range(num_face_groups):
+                num_faces = struct.unpack("<H", f.read(2))[0]
+                slot_idx = len(mesh_data.materials)
+                mesh_data.materials.append(None)  # Placeholder, set after mat_idx
 
                 for _ in range(num_faces):
                     idxs = struct.unpack("<3H", f.read(6))
                     idxs_swap = (idxs[0], idxs[2], idxs[1])
                     try:
-                        if draw:
-                            face = bm.faces.new([vertices[i] for i in idxs_swap])
-                            face.material_index = slot_idx
-                    except:
-                        if draw:
-                            print_debug(
-                                f"Warning: Duplicate face in '{mesh.name}' at {idxs_swap}"
-                            )
+                        face = bm.faces.new([vertices[i] for i in idxs_swap])
+                        face.material_index = slot_idx
+                    except ValueError:
+                        print_debug(f"Warning: Duplicate face in '{mesh.name}' at {idxs_swap}")
 
                 mat_idx = struct.unpack("<H", f.read(2))[0]
+                if 0 < mat_idx <= len(materials):
+                    mesh_data.materials[slot_idx] = materials[mat_idx - 1]
 
-                if draw:
-                    if mat_idx > 0 and mat_idx - 1 < len(materials):
-                        mesh_data.materials[slot_idx] = materials[mat_idx - 1]
+            bm.to_mesh(mesh_data)
+            bm.free()
 
-            if draw:
-                bm.to_mesh(mesh_data)
-                mesh_data.update()
+            mesh_data.update()
 
-                uv_layer = mesh_data.uv_layers.new()
-                for face in mesh_data.polygons:
-                    for loop_idx, loop in enumerate(face.loop_indices):
-                        vert_idx = mesh_data.loops[loop].vertex_index
-                        uv_layer.data[loop].uv = uvs[vert_idx]
+            uv_layer = mesh_data.uv_layers.new(name="UVMap")
+            uv_data = [None] * len(mesh_data.loops)
+            for poly in mesh_data.polygons:
+                for li in poly.loop_indices:
+                    vi = mesh_data.loops[li].vertex_index
+                    uv_data[li] = uvs[vi]
 
-                bm.free()
+            flat_uvs = [uv for pair in uv_data for uv in pair]
+            uv_layer.data.foreach_set("uv", flat_uvs)
 
-                for poly in mesh.data.polygons:
-                    poly.use_smooth = True
+            for poly in mesh.data.polygons:
+                poly.use_smooth = True
 
-                if lod_idx > 0:
-                    mesh.hide_set(True)
-                    mesh.hide_render = True
-                mesh.select_set(False)
+            if lod_idx > 0:
+                mesh.hide_set(True)
+                mesh.hide_render = True
+            mesh.select_set(False)
 
         return num_lods, vertices_per_lod
+
 
     def deserialize_singlemesh(self, f, num_lods, mesh):
         armature_name = mesh.name
@@ -1150,6 +1161,8 @@ class The4DSImporter:
 
         if parent_id > 0:
             self.parenting_info.append((self.frame_index, parent_id))
+
+
             print_debug(f"Deferred parenting: frame {self.frame_index} to parent {parent_id}")
 
         if frame_type == FRAME_VISUAL:
