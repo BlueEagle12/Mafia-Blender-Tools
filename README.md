@@ -73,7 +73,7 @@ Importing out of order may result in missing or unlinked objects.
 
 1. Go to **File → Import → 4DS Model File (.4ds)**  
 2. Select your `scene.4DS` or other model file  
-3. Meshes will appear in the scene, parented to Empties
+3. Meshes will appear in the scene
 
 ### Importing `scene2.bin` or `cache.bin`
 
