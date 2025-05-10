@@ -23,14 +23,12 @@ It reconstructs scenes with correct geometry, materials, transforms, and object 
 ## Features
 
 ### `.4DS` Import
-- Imports meshes with materials and textures  
-- Creates Empties for logical object grouping (`<object_name>_root`)  
-- Supports alpha mapping and emission (if applicable)  
+- Imports meshes with their corresponding materials
 
 ### `scene2.bin` / `cache.bin` Import
-- Parses and restores object positions, rotations, and scales  
-- Links world entries to `.4DS` meshes using the Mafia root folder  
-- Builds hierarchical scene structure via Empty roots  
+- Parses element positions, rotations, scales, and additional properties
+- Automatically links to and imports `.4DS` meshes and lights
+- Builds scene structure
 
 ---
 
