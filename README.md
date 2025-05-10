@@ -64,8 +64,8 @@ It reconstructs scenes with correct geometry, materials, transforms, and object 
 Always import files in this order for scene reconstruction to work correctly:
 
 1. `scene.4DS`  
-2. `cache.bin`  
-3. `scene2.bin`  
+2. `scene2.bin`  
+3. `cache.bin`  
 
 Importing out of order may result in missing or unlinked objects.
 
