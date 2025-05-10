@@ -8,18 +8,32 @@ from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty
 import tempfile
 
-class Import4DSPrefs(bpy.types.AddonPreferences): ## Optional
+class Import4DSPrefs(bpy.types.AddonPreferences):
     bl_idname = __name__
 
     maps_folder: StringProperty(
         name="(Optional) Root Folder",
         subtype='DIR_PATH',
         default="",
-        description="Parent dictonary of extracted maps (Typically your root mafia dictonary)"
-    )
+        description="Parent directory of extracted maps (Typically your root Mafia directory)"
+    )  # type: ignore
+
+    import_lods: bpy.props.BoolProperty(
+        name="Import LODs",
+        description="If disabled, only base models (LOD 0) will be imported",
+        default=False
+    )  # type: ignore
+
+    debug_logging: bpy.props.BoolProperty(
+        name="Enable Debug Logging",
+        default=False,
+        description="print detailed import debug information"
+    )  # type: ignore
 
     def draw(self, context):
         self.layout.prop(self, "maps_folder")
+        self.layout.prop(self, "import_lods")
+        self.layout.prop(self, "debug_logging")
 
 
 bl_info = {
@@ -70,6 +84,11 @@ VISUAL_LANDPATCH = 11
 
 alphaFallBack = ["9ker1.bmp"] # Some textures don't work properly, fallback to legacy alpha mapping
 
+
+def print_debug(text):
+    if bpy.context.preferences.addons[__name__].preferences.debug_logging:
+        print(text)
+    
 class The4DSImporter:
     def __init__(self, filepath):
         self.filepath = filepath
@@ -92,7 +111,7 @@ class The4DSImporter:
         # Normalize to ensure proper separators
         self.base_dir = os.path.normpath(self.base_dir)
         # NOTE: will be overridden by Add-on prefs if set
-        print(f"Base directory set to: {self.base_dir}")
+        print_debug(f"Base directory set to: {self.base_dir}")
         self.version = 0
         self.materials = []
         self.skinned_meshes = []
@@ -110,42 +129,26 @@ class The4DSImporter:
         self.texture_cache = {}  # Maps normalized filepath to bpy.data.images
 
     def parent_to_bone(self, obj, bone_name):
-        # Ensure the context is correct for operator-based parenting
-        bpy.ops.object.select_all(action="DESELECT")
-        self.armature.select_set(True)
-        bpy.context.view_layer.objects.active = self.armature
+        armature = self.armature
 
-        # Set the active bone in edit mode
-        bpy.ops.object.mode_set(mode="EDIT")
-        if bone_name not in self.armature.data.edit_bones:
-            print(f"Error: Bone {bone_name} not found in armature during parenting")
-            bpy.ops.object.mode_set(mode="OBJECT")
+        if bone_name not in armature.data.bones:
+            print_debug(f"[ERROR] Bone '{bone_name}' not found in armature '{armature.name}'")
             return
-        edit_bone = self.armature.data.edit_bones[bone_name]
-        self.armature.data.edit_bones.active = edit_bone
 
-        bone_matrix = Matrix(edit_bone.matrix)
+        # Set parent properties directly
+        obj.parent = armature
+        obj.parent_type = 'BONE'
+        obj.parent_bone = bone_name
 
-        # Switch back to object mode
-        bpy.ops.object.mode_set(mode="OBJECT")
+        # Apply bone translation only (no rotation)
+        bone = armature.data.bones[bone_name]
+        bone_location = armature.matrix_world @ bone.head_local.to_3d()
 
-        # Select the child object and armature
-        bpy.ops.object.select_all(action="DESELECT")
-        obj.select_set(True)
-        self.armature.select_set(True)
-        bpy.context.view_layer.objects.active = self.armature
+        # Adjust object's transform to maintain world position
+        obj.matrix_world.translation = bone_location
 
-        bone_matrix_tr = Matrix.Translation(
-            bone_matrix.to_translation()
-        )  # cut out the rotation part
-        obj.matrix_basis = (
-            self.armature.parent.matrix_world @ bone_matrix_tr @ obj.matrix_basis
-        )
+        print_debug(f"[PARENT] {obj.name} parented to bone '{bone_name}' in armature '{armature.name}'")
 
-        # Perform the parenting operation
-        bpy.ops.object.parent_set(type="BONE", xmirror=False, keep_transform=True)
-
-        print(f"Successfully parented {obj.name} to bone {bone_name}")
 
     def read_string_fixed(self, f, length):
         data = f.read(length)
@@ -167,10 +170,10 @@ class The4DSImporter:
                 if dib_size == 40:  # BITMAPINFOHEADER
                     f.seek(36, 1)  # Offset to color table
                     b, g, r, _ = struct.unpack("<BBBB", f.read(4))  # BGRA
-                    print(f"Color key: {r}, {g}, {b}")
+                    print_debug(f"Color key: {r}, {g}, {b}")
                     return (r / 255.0, g / 255.0, b / 255.0)  # Normalized RGB
         except Exception as e:
-            print(f"Warning: Could not read color key from {filepath}: {e}")
+            print_debug(f"Warning: Could not read color key from {filepath}: {e}")
         return None
     
 
@@ -183,7 +186,7 @@ class The4DSImporter:
                 dib_size = struct.unpack("<I", f.read(4))[0]
 
                 if dib_size != 40:
-                    print("Unsupported DIB header size.")
+                    print_debug("Unsupported DIB header size.")
                     return None, None
 
                 f.seek(10)
@@ -196,7 +199,7 @@ class The4DSImporter:
                 f.seek(28)
                 bpp = struct.unpack("<H", f.read(2))[0]
                 if bpp != 8:
-                    print("Not an 8-bit indexed BMP.")
+                    print_debug("Not an 8-bit indexed BMP.")
                     return None, None
 
                 f.seek(54)
@@ -214,7 +217,7 @@ class The4DSImporter:
 
                 return palette, indices
         except Exception as e:
-            print(f"Warning: Could not read palette from {filepath}: {e}")
+            print_debug(f"Warning: Could not read palette from {filepath}: {e}")
             return None, None
 
 
@@ -248,134 +251,157 @@ class The4DSImporter:
             try:
                 image = bpy.data.images.load(filepath, check_existing=True)
                 self.texture_cache[norm_path] = image
-                print(f"Loaded texture: {filepath}")
+                print_debug(f"Loaded texture: {filepath}")
             except Exception as e:
-                print(f"Warning: Failed to load texture {filepath}: {e}")
+                print_debug(f"Warning: Failed to load texture {filepath}: {e}")
                 self.texture_cache[norm_path] = (
                     None  # Cache None to avoid repeated attempts
                 )
         else:
-            print(f"Reused texture from cache: {filepath}")
+            print_debug(f"Reused texture from cache: {filepath}")
         return self.texture_cache[norm_path]
 
-    def set_material_data(
-        self, material, diffuse, alpha_tex, emission, alpha, metallic, use_color_key
-    ):
-        # Prepare material for nodes
-        material.use_nodes = True
-        nt = material.node_tree
-        nodes = nt.nodes
-        links = nt.links
+
+    def get_material_template(self, template_type, nodes, links, tex_path=None, alpha_path=None, color_key=None, alpha_map=None, emission_strength=0.0):
         nodes.clear()
 
-        # Create core nodes
-        principled = nodes.new("ShaderNodeBsdfPrincipled")
-        output    = nodes.new("ShaderNodeOutputMaterial")
-        principled.location = (-200, 0)
-        output.location    = ( 200, 0)
-
-        # Configure principled inputs
-        principled.inputs["Emission Color"].default_value = (*emission, 1.0)
-        principled.inputs["Metallic"].default_value = metallic
-        principled.inputs["Specular IOR Level"].default_value = 0.0
-        principled.inputs["Roughness"].default_value = 0.0
-
-        # Helper to wire principled → output if nothing else takes that slot
-        def link_principled_to_output():
-            links.new(principled.outputs["BSDF"], output.inputs["Surface"])
-
-        # --- DIFFUSE TEXTURE + COLOR-KEY CUTOUT ---
-
-        if diffuse:
-            tex_path  = f"{self.base_dir}/maps/{diffuse}"
+        if template_type == "SKY_ATMOSPHERE" and tex_path:
             tex_image = nodes.new("ShaderNodeTexImage")
             tex_image.image = self.get_or_load_texture(tex_path)
             tex_image.location = (-400, 200)
 
+            output = nodes.new("ShaderNodeOutputMaterial")
+            output.location = (200, 0)
+            links.new(tex_image.outputs["Color"], output.inputs["Surface"])
 
-            if "sky" in diffuse.lower():
-                material.use_backface_culling = True
-                material.use_backface_culling_shadow = True
-                links.new(tex_image.outputs["Color"], output.inputs["Surface"])
-            else:
-                
-                links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
+            return {"output": output, "tex_image": tex_image}
 
-                tolerance = 0.4 # Sweet spot apparently
+        principled = nodes.new("ShaderNodeBsdfPrincipled")
+        output = nodes.new("ShaderNodeOutputMaterial")
+        principled.location = (-200, 0)
+        output.location = (200, 0)
+        links.new(principled.outputs["BSDF"], output.inputs["Surface"])
 
-                preAlphaMap = diffuse.lower() not in [tex.lower() for tex in alphaFallBack]
+        tex_image = None
+        if tex_path:
+            tex_image = nodes.new("ShaderNodeTexImage")
+            tex_image.image = self.get_or_load_texture(tex_path)
+            tex_image.location = (-600, 200)
+            links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
 
-                if use_color_key:
-                    
-                    tex_image.interpolation = 'Closest'
+            if emission_strength and sum(emission_strength) > 0:
+                strength = sum(emission_strength[:3]) / 3.0
 
-                    color_key4 = self.get_color_key(tex_path)
+                # Multiply diffuse texture by emission color
+                mix_node = nodes.new("ShaderNodeMixRGB")
+                mix_node.blend_type = 'MULTIPLY'
+                mix_node.location = (-400, -200)
+                mix_node.inputs[0].default_value = 1.0  # Full mix
+                mix_node.inputs[1].default_value = (*emission_strength, 1.0)
+                links.new(tex_image.outputs["Color"], mix_node.inputs[2])
 
-                    if color_key4:
+                if alpha_map:
+                    alpha_image = nodes.new("ShaderNodeTexImage")
+                    alpha_image.image = alpha_map
+                    alpha_image.location = (-600, -400)
+                    alpha_image.interpolation = 'Closest'
 
-                        if preAlphaMap:
-                            alpha_map = self.create_alpha_image(tex_path,0) # Use a premade alpha map, more complicated but accurate.
-                        else:
-                            alpha_map = False
+                    alpha_mix = nodes.new("ShaderNodeMixRGB")
+                    alpha_mix.blend_type = 'MULTIPLY'
+                    alpha_mix.location = (-200, -400)
+                    alpha_mix.inputs[0].default_value = 1.0
+                    links.new(mix_node.outputs["Color"], alpha_mix.inputs[1])
+                    links.new(alpha_image.outputs["Color"], alpha_mix.inputs[2])
 
-                        if alpha_map:
-                            alpha_image = nodes.new("ShaderNodeTexImage")
-                            alpha_image.image = alpha_map
-                            
-                            alpha_image.location = (0, 200)
-                            links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
-                            material.blend_method    = 'CLIP'
-                            material.alpha_threshold = 0.5
-
-                            alpha_image.interpolation = 'Closest'
-
-                            link_principled_to_output()
-                        else:
-
-                            color_key = color_key4[:3]
-                            vec = nodes.new("ShaderNodeVectorMath")
-                            vec.operation = 'DISTANCE'
-                            vec.location = (0, 200)
-                            links.new(tex_image.outputs["Color"], vec.inputs[0])
-                            vec.inputs[1].default_value = color_key # your key RGB
-
-                            thr = nodes.new("ShaderNodeMath")
-                            thr.operation = 'GREATER_THAN'
-                            thr.inputs[1].default_value = tolerance       # e.g. 0.02
-                            thr.location = (200, 200)
-                            links.new(vec.outputs["Value"], thr.inputs[0])
-
-                            # 2) Feed the mask directly into Principled Alpha
-                            links.new(thr.outputs["Value"], principled.inputs["Alpha"])
-
-                            # 3) Tell Blender to do a hard clip on your alpha
-                            material.blend_method    = 'CLIP'
-                            material.alpha_threshold = 0.5  # clips anything below 0.5 → transparent
-
-                            # 4) Finally wire your Principled BSDF to the output
-                            link_principled_to_output()
-                    else:
-                        print(f"Warning: no color key for {diffuse}")
-                        link_principled_to_output()
+                    emission_input = alpha_mix.outputs["Color"]
                 else:
-                    link_principled_to_output()
-        else:
-            link_principled_to_output()
+                    emission_input = mix_node.outputs["Color"]
 
-        # --- OPTIONAL ALPHA TEXTURE OVERRIDE ---
+                links.new(emission_input, principled.inputs["Emission Color"])
+                principled.inputs["Emission Strength"].default_value = strength
+
+        if template_type == "ALPHA_CLIP" and tex_image and color_key:
+            tex_image.interpolation = 'Closest'
+            vec = nodes.new("ShaderNodeVectorMath")
+            vec.operation = 'DISTANCE'
+            vec.location = (0, 200)
+            vec.inputs[1].default_value = color_key[:3]
+            links.new(tex_image.outputs["Color"], vec.inputs[0])
+
+            thr = nodes.new("ShaderNodeMath")
+            thr.operation = 'GREATER_THAN'
+            thr.inputs[1].default_value = 0.4
+            thr.location = (200, 200)
+            links.new(vec.outputs["Value"], thr.inputs[0])
+
+            links.new(thr.outputs["Value"], principled.inputs["Alpha"])
+
+        elif template_type == "ALPHA_MASK" and alpha_map:
+            tex_image.interpolation = 'Closest'
+            alpha_image = nodes.new("ShaderNodeTexImage")
+            alpha_image.image = alpha_map
+            alpha_image.location = (0, 200)
+            alpha_image.interpolation = 'Closest'
+            links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
+
+        elif template_type == "ALPHA_BLEND" and alpha_path:
+            alpha_node = nodes.new("ShaderNodeTexImage")
+            alpha_node.image = self.get_or_load_texture(alpha_path)
+            alpha_node.location = (-400, -200)
+            links.new(alpha_node.outputs["Color"], principled.inputs["Alpha"])
+
+        return {
+            "principled": principled,
+            "output": output,
+            "tex_image": tex_image
+        }
+
+
+
+    def set_material_data(self, material, diffuse, alpha_tex, emission, alpha, metallic, use_color_key):
+        material.use_nodes = True
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+
+        tex_path = f"{self.base_dir}/maps/{diffuse}" if diffuse else None
+        alpha_path = f"{self.base_dir}/maps/{alpha_tex}" if alpha_tex else None
+        pre_alpha_map = diffuse and diffuse.lower() not in [tex.lower() for tex in alphaFallBack]
+        color_key = self.get_color_key(tex_path) if use_color_key and tex_path else None
+        alpha_map = self.create_alpha_image(tex_path, 0) if color_key and pre_alpha_map else None
+
+        template_type = "OPAQUE"
+        if alpha_map:
+            template_type = "ALPHA_MASK"
+        elif color_key:
+            template_type = "ALPHA_CLIP"
         if alpha_tex:
-            alpha_path     = f"{self.base_dir}/maps/{alpha_tex}"
-            alpha_tex_node = nodes.new("ShaderNodeTexImage")
-            alpha_tex_node.image = self.get_or_load_texture(alpha_path)
-            alpha_tex_node.location = (-400, -200)
+            template_type = "ALPHA_BLEND"
+        if diffuse and "sky" in diffuse.lower():
+            template_type = "SKY_ATMOSPHERE"
+            material.use_backface_culling = True
+            material.use_backface_culling_shadow = True
+            #material.shadow_method = 'NONE'
 
-            # Feed alpha into Principled and switch to BLEND mode
-            links.new(alpha_tex_node.outputs["Color"], principled.inputs["Alpha"])
+        template = self.get_material_template(template_type, nodes, links, tex_path, alpha_path, color_key, alpha_map, emission)
+        principled = template.get("principled")
+
+        if principled:
+            principled.inputs["Metallic"].default_value = metallic
+            principled.inputs["Specular IOR Level"].default_value = 0.0
+            principled.inputs["Roughness"].default_value = 0.0
+            if alpha:
+                principled.inputs["Alpha"].default_value = alpha
+
+        if template_type == "ALPHA_CLIP" and color_key:
+            material.blend_method = 'CLIP'
+            material.alpha_threshold = 0.5
+
+        elif template_type == "ALPHA_MASK" and alpha_map:
+            material.blend_method = 'CLIP'
+            material.alpha_threshold = 0.5
+
+        elif template_type == "ALPHA_BLEND" and alpha_tex:
             material.blend_method = 'BLEND'
-
-            # If you hadn’t already wired Principled→Output, do so now:
-            # link_principled_to_output()
-
 
     def deserialize_material(self, f):
         flags = struct.unpack("<I", f.read(4))[0]
@@ -415,6 +441,11 @@ class The4DSImporter:
             )
         return mat
 
+    def setWireFrame(self,mesh,showName):
+        mesh['Mafia.wireframe'] = True
+        mesh.display_type = 'WIRE'
+        if showName:
+            mesh.show_name = True
 
     def build_armature(self):
         if not self.armature or not self.joints:
@@ -456,13 +487,13 @@ class The4DSImporter:
                 if isinstance(parent_name, str) and parent_name in bone_map:
                     bone.parent = bone_map[parent_name]
                     bone.head = Vector(location) + bone_map[parent_name].head
-                    print(
+                    print_debug(
                         f"Parented {name} (ID {bone_id}) to {parent_name} (frame {parent_id})"
                     )
                 else:
                     bone.parent = bone_map[self.base_bone_name]
                     bone.head = location
-                    print(
+                    print_debug(
                         f"Parented {name} (ID {bone_id}) to {self.base_bone_name} (no parent at frame {parent_id})"
                     )
 
@@ -473,7 +504,7 @@ class The4DSImporter:
             bone_length = 0.15  # Default length, tweakable
             bone.tail = bone.head + forward_dir.normalized() * bone_length
 
-            print(
+            print_debug(
                 f"Set bone {name} (ID {bone_id}): head {bone.head}, tail {bone.tail}, parent {bone.parent.name if bone.parent else 'None'}"
             )
 
@@ -482,84 +513,77 @@ class The4DSImporter:
             self.armature.scale = self.armature_scale_factor
 
         bpy.ops.object.mode_set(mode="OBJECT")
-        print(f"Armature built with {len(armature.bones)} bones")
+        print_debug(f"Armature built with {len(armature.bones)} bones")
 
     def apply_skinning(self, mesh, vertex_groups, bone_to_parent):
         mod = mesh.modifiers.new(name="Armature", type="ARMATURE")
         mod.object = self.armature
-        print(
-            f"Added armature modifier to {mesh.name} with armature {self.armature.name}"
-        )
+        print_debug(f"Added armature modifier to {mesh.name} with armature {self.armature.name}")
 
         total_vertices = len(mesh.data.vertices)
         vertex_counter = 0
 
         if vertex_groups:
             lod_vertex_groups = vertex_groups[0]
-            bone_nodes = self.bone_nodes
-            bone_names = sorted(
-                bone_nodes.items(), key=lambda x: x[0]
-            )  # Ensure order: [(0, "back1"), (1, "back2"), ...]
-            bone_name_list = [
-                name for _, name in bone_names
-            ]  # ["back1", "back2", "back3", "l_shoulder", ...]
+            bone_names = [name for _, name in sorted(self.bone_nodes.items())]
 
             for bone_id, num_locked, weights in lod_vertex_groups:
-                if bone_id < len(bone_name_list):
-                    bone_name = bone_name_list[bone_id]
+                if bone_id < len(bone_names):
+                    bone_name = bone_names[bone_id]
                 else:
-                    print(
-                        f"Warning: Bone ID {bone_id} exceeds available bone names ({len(bone_name_list)})"
-                    )
+                    print_debug(f"[WARN] Bone ID {bone_id} exceeds bone list size ({len(bone_names)})")
                     bone_name = f"unknown_bone_{bone_id}"
 
                 bvg = mesh.vertex_groups.get(bone_name)
                 if not bvg:
                     bvg = mesh.vertex_groups.new(name=bone_name)
-                    print(f"Created vertex group for bone {bone_name} (ID {bone_id})")
+                    print_debug(f"Created vertex group for bone {bone_name} (ID {bone_id})")
                 else:
-                    print(f"Reusing vertex group {bone_name} (ID {bone_id})")
+                    print_debug(f"Reusing vertex group {bone_name} (ID {bone_id})")
 
-                locked_vertices = list(
-                    range(vertex_counter, vertex_counter + num_locked)
-                )
-                if locked_vertices:
-                    bvg.add(locked_vertices, 1.0, "ADD")
-                    for v_idx in locked_vertices:
-                        print(
-                            f"Assigned locked vertex {v_idx} to {bone_name} (ID {bone_id}) with weight 1.0"
-                        )
-                vertex_counter += num_locked
+                # Assign locked vertices
+                if num_locked > 0:
+                    locked = list(range(vertex_counter, vertex_counter + num_locked))
+                    bvg.add(locked, 1.0, "ADD")
+                    print_debug(f"[INFO] Assigned {len(locked)} locked verts to {bone_name} (ID {bone_id})")
+                    vertex_counter += num_locked
 
-                weighted_vertices = list(
-                    range(vertex_counter, vertex_counter + len(weights))
-                )
-                for i, w in zip(weighted_vertices, weights):
-                    if i < total_vertices:
-                        bvg.add([i], w, "REPLACE")
-                        print(
-                            f"Assigned weighted vertex {i} to {bone_name} (ID {bone_id}) with weight {w}"
-                        )
-                    else:
-                        print(
-                            f"Warning: Vertex index {i} out of range ({total_vertices})"
-                        )
-                vertex_counter += len(weights)
+                # Assign weighted vertices (batched)
+                if weights:
+                    weighted = list(range(vertex_counter, vertex_counter + len(weights)))
+                    valid_indices = []
+                    valid_weights = []
 
+                    for i, w in zip(weighted, weights):
+                        if i < total_vertices:
+                            valid_indices.append(i)
+                            valid_weights.append(w)
+                        else:
+                            print_debug(f"[WARN] Skipping vertex index {i} (out of {total_vertices})")
+
+                    grouped = {}
+                    for idx, w in zip(valid_indices, valid_weights):
+                        grouped.setdefault(w, []).append(idx)
+
+                    for weight, indices in grouped.items():
+                        bvg.add(indices, weight, "REPLACE")
+
+                    print_debug(f"[INFO] Assigned {len(valid_indices)} weighted verts to {bone_name} (ID {bone_id})")
+                    vertex_counter += len(weights)
+
+            # Assign remaining vertices to base bone
             base_vg = mesh.vertex_groups.get(self.base_bone_name)
             if not base_vg:
                 base_vg = mesh.vertex_groups.new(name=self.base_bone_name)
-                print(f"Created vertex group for base bone {self.base_bone_name}")
-            base_vertices = list(range(vertex_counter, total_vertices))
-            if base_vertices:
-                base_vg.add(base_vertices, 1.0, "ADD")
-                print(
-                    f"Assigned {len(base_vertices)} non-weighted vertices ({vertex_counter}–{total_vertices-1}) to {self.base_bone_name}"
-                )
+                print_debug(f"Created vertex group for base bone {self.base_bone_name}")
 
-        print(
-            f"Completed skinning for {mesh.name}: {total_vertices} vertices processed"
-        )
+            base_remaining = list(range(vertex_counter, total_vertices))
+            if base_remaining:
+                base_vg.add(base_remaining, 1.0, "ADD")
+                print_debug(f"[INFO] Assigned {len(base_remaining)} remaining verts to {self.base_bone_name}")
+
+        print_debug(f"[DONE] Skinning complete for {mesh.name} ({total_vertices} verts total)")
+
 
     def deserialize_object(self, f, materials, mesh, mesh_data):
         instance_id = struct.unpack("<H", f.read(2))[0]
@@ -570,20 +594,27 @@ class The4DSImporter:
 
         num_lods = struct.unpack("<B", f.read(1))[0]
         for lod_idx in range(num_lods):
+            draw = True
+
             if lod_idx > 0:
-                name = f"{mesh.name}_lod{lod_idx}"
-                mesh_data = bpy.data.meshes.new(name)
-                new_mesh = bpy.data.objects.new(name, mesh_data)
-                new_mesh.parent = mesh
-                bpy.context.collection.objects.link(new_mesh)
-                mesh = new_mesh
+                if self.drawLODS:
+                    name = f"{mesh.name}_lod{lod_idx}"
+                    mesh_data = bpy.data.meshes.new(name)
+                    new_mesh = bpy.data.objects.new(name, mesh_data)
+                    new_mesh.parent = mesh
+                    self.collection.objects.link(new_mesh)
+                    mesh = new_mesh
+                else:
+                    draw = False
 
             clipping_range = struct.unpack("<f", f.read(4))[0]
             num_vertices = struct.unpack("<H", f.read(2))[0]
 
             vertices_per_lod.append(num_vertices)
+            
+            if draw:
+                bm = bmesh.new()
 
-            bm = bmesh.new()
             vertices = []
             uvs = []
 
@@ -591,52 +622,61 @@ class The4DSImporter:
                 pos = struct.unpack("<3f", f.read(12))
                 norm = struct.unpack("<3f", f.read(12))
                 uv = struct.unpack("<2f", f.read(8))
-                vert = bm.verts.new((pos[0], pos[2], pos[1]))
-                vert.normal = (norm[0], norm[2], norm[1])
-                vertices.append(vert)
-                uvs.append((uv[0], -uv[1]))
+                if draw:
+                    vert = bm.verts.new((pos[0], pos[2], pos[1]))
+                    vert.normal = (norm[0], norm[2], norm[1])
+                    vertices.append(vert)
+                    uvs.append((uv[0], -uv[1]))
 
-            bm.verts.ensure_lookup_table()
+            if draw:
+                bm.verts.ensure_lookup_table()
 
             num_face_groups = struct.unpack("<B", f.read(1))[0]
             for group_idx in range(num_face_groups):
                 num_faces = struct.unpack("<H", f.read(2))[0]
-                mesh_data.materials.append(None)
-                slot_idx = len(mesh_data.materials) - 1
+
+                if draw:
+                    mesh_data.materials.append(None)
+                    slot_idx = len(mesh_data.materials) - 1
 
                 for _ in range(num_faces):
                     idxs = struct.unpack("<3H", f.read(6))
                     idxs_swap = (idxs[0], idxs[2], idxs[1])
                     try:
-                        face = bm.faces.new([vertices[i] for i in idxs_swap])
-                        face.material_index = slot_idx
+                        if draw:
+                            face = bm.faces.new([vertices[i] for i in idxs_swap])
+                            face.material_index = slot_idx
                     except:
-                        print(
-                            f"Warning: Duplicate face in '{mesh.name}' at {idxs_swap}"
-                        )
+                        if draw:
+                            print_debug(
+                                f"Warning: Duplicate face in '{mesh.name}' at {idxs_swap}"
+                            )
 
                 mat_idx = struct.unpack("<H", f.read(2))[0]
-                if mat_idx > 0 and mat_idx - 1 < len(materials):
-                    mesh_data.materials[slot_idx] = materials[mat_idx - 1]
 
-            bm.to_mesh(mesh_data)
-            mesh_data.update()
+                if draw:
+                    if mat_idx > 0 and mat_idx - 1 < len(materials):
+                        mesh_data.materials[slot_idx] = materials[mat_idx - 1]
 
-            uv_layer = mesh_data.uv_layers.new()
-            for face in mesh_data.polygons:
-                for loop_idx, loop in enumerate(face.loop_indices):
-                    vert_idx = mesh_data.loops[loop].vertex_index
-                    uv_layer.data[loop].uv = uvs[vert_idx]
+            if draw:
+                bm.to_mesh(mesh_data)
+                mesh_data.update()
 
-            bm.free()
+                uv_layer = mesh_data.uv_layers.new()
+                for face in mesh_data.polygons:
+                    for loop_idx, loop in enumerate(face.loop_indices):
+                        vert_idx = mesh_data.loops[loop].vertex_index
+                        uv_layer.data[loop].uv = uvs[vert_idx]
 
-            bpy.context.view_layer.objects.active = mesh
-            mesh.select_set(True)
-            bpy.ops.object.shade_smooth()
-            if lod_idx > 0:
-                mesh.hide_set(True)
-                mesh.hide_render = True
-            mesh.select_set(False)
+                bm.free()
+
+                for poly in mesh.data.polygons:
+                    poly.use_smooth = True
+
+                if lod_idx > 0:
+                    mesh.hide_set(True)
+                    mesh.hide_render = True
+                mesh.select_set(False)
 
         return num_lods, vertices_per_lod
 
@@ -647,8 +687,8 @@ class The4DSImporter:
             armature_data.display_type = "STICK"
             self.armature = bpy.data.objects.new(armature_name, armature_data)
             self.armature.show_in_front = True
-            bpy.context.collection.objects.link(self.armature)
-            print(f"Created armature: {armature_name}")
+            self.collection.objects.link(self.armature)
+            print_debug(f"Created armature: {armature_name}")
 
             bpy.context.view_layer.objects.active = self.armature
             bpy.ops.object.mode_set(mode="EDIT")
@@ -656,13 +696,13 @@ class The4DSImporter:
             base_bone.head = (0, -0.3, 0)
             base_bone.tail = (0, 0, 0)
             self.base_bone_name = base_bone.name
-            print(f"Created base bone: {base_bone.name}")
+            print_debug(f"Created base bone: {base_bone.name}")
             bpy.ops.object.mode_set(mode="OBJECT")
 
         mesh.name = armature_name
         self.armature.name = armature_name + "_armature"
         self.armature.parent = mesh
-        print(f"Set armature {self.armature.name} parent to mesh {mesh.name}")
+        print_debug(f"Set armature {self.armature.name} parent to mesh {mesh.name}")
 
         vertex_groups = []  # List of (bone_id, num_locked, weights) tuples per LOD
         bone_to_parent = {}
@@ -700,19 +740,19 @@ class The4DSImporter:
                         parent_id = pid
                         break
                 bone_to_parent[bone_id] = parent_id
-                print(
+                print_debug(
                     f"Sequential Bone ID {bone_id} (File ID {file_bone_id}): {num_locked} locked, {num_weighted} weighted, parent ID {parent_id}"
                 )
 
                 lod_vertex_groups.append((bone_id, num_locked, weights))
 
             vertex_groups.append(lod_vertex_groups)
-            print(
+            print_debug(
                 f"LOD {lod_id} vertex_groups: {[(bid, nl, len(w)) for bid, nl, w in lod_vertex_groups]}"
             )
 
         self.skinned_meshes.append((mesh, vertex_groups, bone_to_parent))
-        print(f"Stored in skinned_meshes: vertex_groups length={len(vertex_groups[0])}")
+        print_debug(f"Stored in skinned_meshes: vertex_groups length={len(vertex_groups[0])}")
         return vertex_groups
 
     def deserialize_dummy(self, f, empty, pos, rot, scale):
@@ -735,7 +775,7 @@ class The4DSImporter:
         empty.empty_display_type = "CUBE"
         empty.empty_display_size = display_size
         empty.show_name = True  # Display name in viewport
-        print(
+        print_debug(
             f"Set empty {empty.name} display type to CUBE, size 1.0, scale {empty.scale}, show_name True"
         )
 
@@ -748,7 +788,7 @@ class The4DSImporter:
         # Store bounding box as custom properties (unchanged)
         empty["bbox_min"] = min_bounds
         empty["bbox_max"] = max_bounds
-        print(
+        print_debug(
             f"Set empty {empty.name} bbox_min to {empty['bbox_min']}, bbox_max to {empty['bbox_max']}"
         )
 
@@ -759,7 +799,7 @@ class The4DSImporter:
         link_ids = struct.unpack(
             f"<{num_links}H", f.read(2 * num_links)
         )  # uint16 linkIDs[numLinks]
-        print(
+        print_debug(
             f"Target {empty.name}: unknown {unknown}, numLinks {num_links}, linkIDs {link_ids}"
         )
 
@@ -767,7 +807,7 @@ class The4DSImporter:
         empty.empty_display_type = "PLAIN_AXES"  # Visual cue for target
         empty.empty_display_size = 0.5  # Small size, tweakable
         empty.show_name = True  # Display name in viewport
-        print(
+        print_debug(
             f"Set empty {empty.name} display type to PLAIN_AXES, size 0.5, show_name True"
         )
 
@@ -776,129 +816,91 @@ class The4DSImporter:
         empty.rotation_mode = "QUATERNION"
         empty.rotation_quaternion = (rot[0], rot[1], rot[3], rot[2])
         empty.scale = scale
-        print(
+        print_debug(
             f"Set empty {empty.name} location to {empty.location}, rotation to {empty.rotation_quaternion}, scale {empty.scale}"
         )
 
         # Store linkIDs as custom property
         empty["link_ids"] = list(link_ids)
-        print(f"Set empty {empty.name} link_ids to {empty['link_ids']}")
+        print_debug(f"Set empty {empty.name} link_ids to {empty['link_ids']}")
 
     def deserialize_morph(self, f, mesh, num_vertices_per_lod):
         num_targets = struct.unpack("<B", f.read(1))[0]
-        print(f"MORPH: num_targets={num_targets}")
-
         if num_targets == 0:
+            print_debug(f"[MORPH] No targets — skipping morph block")
             return
 
         num_channels = struct.unpack("<B", f.read(1))[0]
         num_lods = struct.unpack("<B", f.read(1))[0]
-        print(f"MORPH: num_channels={num_channels}, num_lods={num_lods}")
+        print_debug(f"[MORPH] Targets={num_targets}, Channels={num_channels}, LODs={num_lods}")
 
-        # Validate num_lods matches the OBJECT structure
         if len(num_vertices_per_lod) != num_lods:
-            print(
-                f"Warning: MORPH num_lods ({num_lods}) does not match OBJECT num_lods ({len(num_vertices_per_lod)})"
-            )
+            print_debug(f"[WARN] LOD count mismatch: morph={num_lods}, object={len(num_vertices_per_lod)}")
             num_lods = min(num_lods, len(num_vertices_per_lod))
 
-        # Store morph data for each LOD and channel
         morph_data = []
         for lod_idx in range(num_lods):
             lod_data = []
             for channel_idx in range(num_channels):
                 num_morph_vertices = struct.unpack("<H", f.read(2))[0]
-                print(
-                    f"MORPH LOD {lod_idx}, Channel {channel_idx}: num_morph_vertices={num_morph_vertices}"
-                )
-
                 if num_morph_vertices == 0:
                     lod_data.append([])
                     continue
 
-                # Read morphed vertices
                 vertex_data = []
-                for vert_idx in range(num_morph_vertices):
+                for _ in range(num_morph_vertices):
                     targets = []
-                    for target_idx in range(num_targets):
-                        # Read position and normal (VECTOR3)
+                    for _ in range(num_targets):
                         p = struct.unpack("<3f", f.read(12))
                         n = struct.unpack("<3f", f.read(12))
-                        # Convert from 4DS Y-up to Blender Z-up: (X, Y, Z) -> (X, Z, Y)
                         p = (p[0], p[2], p[1])
                         n = (n[0], n[2], n[1])
                         targets.append((p, n))
                     vertex_data.append(targets)
 
-                # Read unknown flag and vertex indices
                 unknown = struct.unpack("<?", f.read(1))[0]
-                vertex_indices = []
                 if unknown:
-                    vertex_indices = struct.unpack(
-                        f"<{num_morph_vertices}H", f.read(2 * num_morph_vertices)
-                    )
-                    print(
-                        f"MORPH LOD {lod_idx}, Channel {channel_idx}: vertex_indices={vertex_indices}"
-                    )
+                    vertex_indices = struct.unpack(f"<{num_morph_vertices}H", f.read(2 * num_morph_vertices))
                 else:
-                    # If unknown is False, assume indices are sequential
                     vertex_indices = list(range(num_morph_vertices))
-                    print(
-                        f"MORPH LOD {lod_idx}, Channel {channel_idx}: assuming sequential vertex_indices"
-                    )
 
                 lod_data.append((vertex_data, vertex_indices))
             morph_data.append(lod_data)
 
-            min_bounds = struct.unpack("<3f", f.read(12))
-            max_bounds = struct.unpack("<3f", f.read(12))
-            center = struct.unpack("<3f", f.read(12))
-            dist = struct.unpack("<f", f.read(4))
-            # Convert to Blender Z-up
-            min_bounds = (min_bounds[0], min_bounds[2], min_bounds[1])
-            max_bounds = (max_bounds[0], max_bounds[2], max_bounds[1])
-            center = (center[0], center[2], center[1])
-        print(
-            f"MORPH: min={min_bounds}, max={max_bounds}, center={center}, dist={dist}"
-        )
+            # Skip bounds parsing unless used for something later
+            f.read(12 * 3 + 4)  # min, max, center, dist
 
-        # Apply shape keys to the mesh for each LOD and channel
         if not mesh.data.shape_keys:
             mesh.shape_key_add(name="Basis", from_mix=False)
 
+        total_mesh_vertices = len(mesh.data.vertices)
+
         for lod_idx in range(num_lods):
             num_vertices = num_vertices_per_lod[lod_idx]
-            if len(mesh.data.vertices) != num_vertices:
-                print(
-                    f"Warning: Mesh vertex count ({len(mesh.data.vertices)}) does not match LOD {lod_idx} expected ({num_vertices})"
-                )
+            if total_mesh_vertices != num_vertices:
+                print_debug(f"[SKIP] Vertex count mismatch: mesh={total_mesh_vertices}, LOD{lod_idx}={num_vertices}")
                 continue
 
             lod_data = morph_data[lod_idx]
-            for channel_idx in range(num_channels):
-                if not lod_data[channel_idx]:
+            for channel_idx, channel_data in enumerate(lod_data):
+                if not channel_data:
                     continue
 
-                vertex_data, vertex_indices = lod_data[channel_idx]
+                vertex_data, vertex_indices = channel_data
                 for target_idx in range(num_targets):
-                    shape_key_name = (
-                        f"Target_{target_idx}_LOD{lod_idx}_Channel{channel_idx}"
-                    )
+                    shape_key_name = f"Target_{target_idx}_LOD{lod_idx}_Channel{channel_idx}"
                     shape_key = mesh.shape_key_add(name=shape_key_name, from_mix=False)
-                    print(f"Created shape key: {shape_key_name}")
 
-                    # Apply morph target positions
+                    updated_count = 0
                     for morph_idx, vert_idx in enumerate(vertex_indices):
                         if vert_idx >= num_vertices:
-                            print(
-                                f"Warning: Vertex index {vert_idx} out of range for LOD {lod_idx} with {num_vertices} vertices"
-                            )
                             continue
                         target_pos, _ = vertex_data[morph_idx][target_idx]
                         shape_key.data[vert_idx].co = target_pos
-                        print(
-                            f"Set shape key {shape_key_name} vertex {vert_idx} to position {target_pos}"
-                        )
+                        updated_count += 1
+
+                    print_debug(f"[MORPH] Created shape key '{shape_key_name}' — {updated_count} verts set")
+
 
     def deserialize_sector(self, f, mesh, pos, rot, scale):
         # Read sector header
@@ -964,21 +966,22 @@ class The4DSImporter:
         mesh_data = mesh.data
         mesh_data.from_pydata(vertices, [], faces)
         mesh_data.update()
-        print(
+        print_debug(
             f"Created sector mesh {mesh.name} with {num_vertices} vertices, {num_faces} faces"
         )
 
         # Set sector as wireframe
-        mesh.display_type = "WIRE"
-        mesh.show_name = True
-        print(f"Set {mesh.name} display_type to WIRE, show_name True")
+
+        self.setWireFrame(mesh,True)
+
+        print_debug(f"Set {mesh.name} display_type to WIRE, show_name True")
 
         # Apply sector transform
         mesh.location = pos
         mesh.rotation_mode = "QUATERNION"
         mesh.rotation_quaternion = (rot[0], rot[1], rot[3], rot[2])
         mesh.scale = scale
-        print(
+        print_debug(
             f"Set {mesh.name} location to {pos}, rotation to {mesh.rotation_quaternion}, scale to {scale}"
         )
 
@@ -1005,19 +1008,19 @@ class The4DSImporter:
                 p_vertices, [], []
             )  # No faces, wireframe will show edges
             portal_mesh = bpy.data.objects.new(portal_name, portal_data)
-            bpy.context.collection.objects.link(portal_mesh)
+            self.collection.objects.link(portal_mesh)
 
             # Set as wireframe
-            portal_mesh.display_type = "WIRE"
-            portal_mesh.show_name = True
-            print(
+            self.setWireFrame(portal_mesh,True)
+
+            print_debug(
                 f"Created portal mesh {portal_name} with {p_num_vertices} vertices, display_type WIRE"
             )
 
             # Parent to sector
             portal_mesh.parent = mesh
             portal_mesh.matrix_parent_inverse = mesh.matrix_world.inverted()
-            print(f"Parented {portal_name} to {mesh.name}")
+            print_debug(f"Parented {portal_name} to {mesh.name}")
 
             # Store portal data as custom properties
             portal_mesh["plane"] = plane
@@ -1031,7 +1034,7 @@ class The4DSImporter:
         mesh["min_bounds"] = min_bounds[:3] if self.version == 41 else min_bounds
         mesh["max_bounds"] = max_bounds[:3] if self.version == 41 else max_bounds
         mesh["num_portals"] = num_portals
-        print(
+        print_debug(
             f"Stored sector {mesh.name} custom props: flags {flags}, AABB {mesh['min_bounds']} to {mesh['max_bounds']}, {num_portals} portals"
         )
 
@@ -1065,23 +1068,52 @@ class The4DSImporter:
         mesh_data = mesh.data
         mesh_data.from_pydata(vertices, [], faces)
         mesh_data.update()
-        print(
+        print_debug(
             f"Created occluder mesh {mesh.name} with {num_vertices} vertices, {num_faces} faces"
         )
 
         # Set as wireframe
-        mesh.display_type = "WIRE"
-        mesh.show_name = True  # Optional, like dummies
-        print(f"Set {mesh.name} display_type to WIRE, show_name True")
+        self.setWireFrame(mesh,True)
+
+        print_debug(f"Set {mesh.name} display_type to WIRE, show_name True")
 
         # Apply transform
         mesh.location = pos
         mesh.rotation_mode = "QUATERNION"
         mesh.rotation_quaternion = (rot[0], rot[1], rot[3], rot[2])
         mesh.scale = scale
-        print(
+        print_debug(
             f"Set {mesh.name} location to {pos}, rotation to {mesh.rotation_quaternion}, scale to {scale}"
         )
+
+
+    def is_material_blank(self,mat):
+        if not mat or not mat.use_nodes:
+            return True  # No material or no node tree
+
+        nodes = mat.node_tree.nodes
+        if len(nodes) <= 1:
+            return True  # Only output or totally empty
+
+        output = nodes.get("Material Output")
+        if output is None or not output.inputs["Surface"].is_linked:
+            return True  # No output or nothing linked
+
+        return False
+    
+    def should_be_wireframe(self,obj):
+        if obj.type != 'MESH':
+            return False
+
+        if not obj.material_slots:
+            return True
+
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat and not self.is_material_blank(mat):
+                return False  # Found a valid material
+
+        return True
 
     def deserialize_frame(self, f, materials, frames):
         frame_type = struct.unpack("<B", f.read(1))[0]
@@ -1111,43 +1143,42 @@ class The4DSImporter:
         name = self.read_string(f)
         user_props = self.read_string(f)
 
-        print(f"Creating frame #{self.frame_index} called {name} type {frame_type}")
+        print_debug(f"Creating frame #{self.frame_index} called {name} type {frame_type} visual {visual_type}")
 
         # Store frame type
         self.frame_types[self.frame_index] = frame_type
 
         if parent_id > 0:
             self.parenting_info.append((self.frame_index, parent_id))
-            print(f"Deferred parenting: frame {self.frame_index} to parent {parent_id}")
+            print_debug(f"Deferred parenting: frame {self.frame_index} to parent {parent_id}")
 
         if frame_type == FRAME_VISUAL:
             if visual_type == VISUAL_OBJECT or visual_type == VISUAL_LITOBJECT:
                 mesh_data = bpy.data.meshes.new(name + "_mesh")
                 mesh = bpy.data.objects.new(name, mesh_data)
-                bpy.context.collection.objects.link(mesh)
+                self.collection.objects.link(mesh)
                 frames.append(mesh)
                 self.frames_map[self.frame_index] = mesh
 
                 self.frame_index += 1
 
                 mesh.matrix_local = transform_mat
-                # mesh.location = pos
-                # mesh.scale = scl
-                # mesh.rotation_euler = rot_euler
 
                 self.deserialize_object(f, materials, mesh, mesh_data)
+                
+                if self.should_be_wireframe(mesh):
+                    self.setWireFrame(mesh,False)
+
+                    print_debug(f"[WIRE] {mesh.name} set to wireframe due to blank material")
 
             elif visual_type == VISUAL_SINGLEMESH:
                 mesh_data = bpy.data.meshes.new(name + "_mesh")
                 mesh = bpy.data.objects.new(name, mesh_data)
-                bpy.context.collection.objects.link(mesh)
+                self.collection.objects.link(mesh)
                 frames.append(mesh)
                 self.frames_map[self.frame_index] = mesh
 
                 mesh.matrix_local = transform_mat
-                # mesh.location = pos
-                # mesh.scale = scl
-                # mesh.rotation_euler = rot_euler
 
                 num_lods, _ = self.deserialize_object(f, materials, mesh, mesh_data)
                 self.deserialize_singlemesh(f, num_lods, mesh)
@@ -1159,7 +1190,7 @@ class The4DSImporter:
             elif visual_type == VISUAL_BILLBOARD:
                 mesh_data = bpy.data.meshes.new(name + "_billboard")
                 mesh = bpy.data.objects.new(name, mesh_data)
-                bpy.context.collection.objects.link(mesh)
+                self.collection.objects.link(mesh)
                 frames.append(mesh)
                 self.frames_map[self.frame_index] = mesh
 
@@ -1175,7 +1206,7 @@ class The4DSImporter:
             elif visual_type == VISUAL_SINGLEMORPH:
                 mesh_data = bpy.data.meshes.new(name + "_mesh")
                 mesh = bpy.data.objects.new(name, mesh_data)
-                bpy.context.collection.objects.link(mesh)
+                self.collection.objects.link(mesh)
                 frames.append(mesh)
                 self.frames_map[self.frame_index] = mesh
 
@@ -1199,7 +1230,7 @@ class The4DSImporter:
             elif visual_type == VISUAL_MORPH:
                 mesh_data = bpy.data.meshes.new(name + "_mesh")
                 mesh = bpy.data.objects.new(name, mesh_data)
-                bpy.context.collection.objects.link(mesh)
+                self.collection.objects.link(mesh)
                 frames.append(mesh)
                 self.frames_map[self.frame_index] = mesh
 
@@ -1216,12 +1247,12 @@ class The4DSImporter:
                 self.deserialize_morph(f, mesh, vertices_per_lod)
 
             else:
-                print(f"Unsupported visual type {visual_type} for '{name}'")
+                print_debug(f"Unsupported visual type {visual_type} for '{name}'")
                 return False
 
         elif frame_type == FRAME_DUMMY:
             empty = bpy.data.objects.new(name, None)
-            bpy.context.collection.objects.link(empty)
+            self.collection.objects.link(empty)
             frames.append(empty)
             self.frames_map[self.frame_index] = empty
 
@@ -1230,9 +1261,10 @@ class The4DSImporter:
             # Pass transformation data directly
             self.deserialize_dummy(f, empty, pos, rot_tuple, scl)
 
+
         elif frame_type == FRAME_TARGET:
             empty = bpy.data.objects.new(name, None)
-            bpy.context.collection.objects.link(empty)
+            self.collection.objects.link(empty)
             frames.append(empty)
 
             self.frames_map[self.frame_index] = empty
@@ -1244,7 +1276,7 @@ class The4DSImporter:
         elif frame_type == FRAME_SECTOR:
             mesh_data = bpy.data.meshes.new(name)  # Create mesh datablock
             mesh = bpy.data.objects.new(name, mesh_data)  # Create mesh object
-            bpy.context.collection.objects.link(mesh)
+            self.collection.objects.link(mesh)
             frames.append(mesh)
 
             self.frames_map[self.frame_index] = mesh
@@ -1253,10 +1285,11 @@ class The4DSImporter:
 
             self.deserialize_sector(f, mesh, pos, rot_tuple, scl)
 
+
         elif frame_type == FRAME_OCCLUDER:
             mesh_data = bpy.data.meshes.new(name)  # Create mesh datablock
             mesh = bpy.data.objects.new(name, mesh_data)  # Create mesh object
-            bpy.context.collection.objects.link(mesh)
+            self.collection.objects.link(mesh)
             frames.append(mesh)
 
             self.frames_map[self.frame_index] = mesh
@@ -1276,27 +1309,51 @@ class The4DSImporter:
                 self.bones_map[self.frame_index] = name
                 self.frames_map[self.frame_index] = name
 
-                print(
+                print_debug(
                     f"Collected joint: {name} (ID: {bone_id + 1}, Parent ID: {parent_id}, Pos: {pos}, Rot: {rot_euler})"
                 )
 
                 self.frame_index += 1
 
         else:
-            print(f"Unsupported frame type {frame_type} for '{name}'")
+            print_debug(f"Unsupported frame type {frame_type} for '{name}'")
             return False
+
 
         return True
 
-    def import_file(self):
+
+    def getCollection(self,collection,collection_name):
+            
+            if collection:
+                return collection
+            else:
+                collection_name = collection_name or '4DS_Collection'
+                if collection_name in bpy.data.collections:
+                    collection = bpy.data.collections[collection_name]
+                else:
+                    collection = bpy.data.collections.new(collection_name)
+                    bpy.context.scene.collection.children.link(collection)
+                return collection
+
+
+    def import_file(self,collection=None,collection_name=None):
+
+        prefs = bpy.context.preferences.addons[__name__].preferences
+        
+        self.drawLODS  = prefs.import_lods
+
+
+        self.collection = self.getCollection(collection,collection_name)
+
         with open(self.filepath, "rb") as f:
             if self.read_string_fixed(f, 4) != "4DS\0":
-                print("Error: Not a 4DS file")
+                print_debug("Error: Not a 4DS file")
                 return
 
             self.version = struct.unpack("<H", f.read(2))[0]
             if self.version != VERSION_MAFIA:
-                print(
+                print_debug(
                     f"Error: This addon currently only supports 4DS version for Mafia (version 29)."
                 )
                 return
@@ -1322,27 +1379,29 @@ class The4DSImporter:
 
             data = f.read(1)
             if len(data) < 1:
-                print("Warning: Unexpected EOF while reading animation flag.")
+                print_debug("Warning: Unexpected EOF while reading animation flag.")
                 is_animated = 0
             else:
                 is_animated = struct.unpack("<B", data)[0]
                 if is_animated:
-                    print("Note: Animation flag detected (not implemented)")
+                    print_debug("Note: Animation flag detected (not implemented)")
+
+            return frames
 
     def apply_deferred_parenting(self):
-        print("Applying deferred parenting...")
-        print(f"Frames map: {self.frames_map}")
-        print(f"Bones map: {self.bones_map}")
-        print(f"Frame types: {self.frame_types}")
-        print(f"Parenting info: {self.parenting_info}")
+        print_debug("Applying deferred parenting...")
+        print_debug(f"Frames map: {self.frames_map}")
+        print_debug(f"Bones map: {self.bones_map}")
+        print_debug(f"Frame types: {self.frame_types}")
+        print_debug(f"Parenting info: {self.parenting_info}")
 
         for frame_index, parent_id in self.parenting_info:
             if frame_index not in self.frames_map:
-                print(f"Warning: Frame {frame_index} not found in frames_map")
+                print_debug(f"Warning: Frame {frame_index} not found in frames_map")
                 continue
 
             if frame_index == parent_id:
-                print(f"Ignoring frame {frame_index} - parent set to itself")
+                print_debug(f"Ignoring frame {frame_index} - parent set to itself")
                 continue
 
             parent_type = self.frame_types.get(parent_id, 0)
@@ -1351,13 +1410,13 @@ class The4DSImporter:
             if child_obj is None or isinstance(
                 child_obj, str
             ):  # Joints are stored as names
-                print(
+                print_debug(
                     f"Skipping parenting for frame {frame_index}: Not a valid object (value: {child_obj})"
                 )
                 continue
 
             if parent_id not in self.frames_map:
-                print(
+                print_debug(
                     f"Warning: Parent {parent_id} for frame {frame_index} not found in frames_map"
                 )
                 continue
@@ -1367,35 +1426,35 @@ class The4DSImporter:
             if parent_type == FRAME_JOINT:
                 # Parent to the armature with the corresponding bone
                 if not self.armature:
-                    print(
+                    print_debug(
                         f"Warning: No armature available to parent frame {frame_index} to joint {parent_id}"
                     )
                     continue
 
                 parent_bone_name = self.bones_map.get(parent_id)
                 if not parent_bone_name:
-                    print(f"Warning: Bone for joint {parent_id} not found in bones_map")
+                    print_debug(f"Warning: Bone for joint {parent_id} not found in bones_map")
                     continue
 
                 if parent_bone_name not in self.armature.data.bones:
-                    print(f"Warning: Bone {parent_bone_name} not found in armature")
+                    print_debug(f"Warning: Bone {parent_bone_name} not found in armature")
                     continue
 
                 # Set parent to armature with parent bone
                 self.parent_to_bone(child_obj, parent_bone_name)
-                print(
+                print_debug(
                     f"Parented frame {frame_index} ({child_obj.name}) to bone {parent_bone_name} in armature"
                 )
             else:
                 if isinstance(parent_entry, str):  # Parent is a joint
-                    print(
+                    print_debug(
                         f"Warning: Parent {parent_id} is a joint but frame type is {parent_type}"
                     )
                     continue
                 # Regular object-to-object parenting
                 parent_obj = parent_entry
                 child_obj.parent = parent_obj
-                print(
+                print_debug(
                     f"Parented frame {frame_index} ({child_obj.name}) to frame {parent_id} ({parent_obj.name})"
                 )
 
@@ -1411,9 +1470,15 @@ class Import4DS(bpy.types.Operator, ImportHelper):
         # instantiate importer and then override base_dir if user set a custom maps folder
         importer = The4DSImporter(self.filepath)
         prefs = context.preferences.addons[__name__].preferences
+        
         if prefs.maps_folder:
             importer.base_dir = bpy.path.abspath(prefs.maps_folder)
-        importer.import_file()
+
+        parent_folder = os.path.basename(os.path.dirname(self.filepath))
+
+        collection_name = None if parent_folder.lower() == "models" else parent_folder
+
+        importer.import_file(None,collection_name)
         return {"FINISHED"}
 
 
