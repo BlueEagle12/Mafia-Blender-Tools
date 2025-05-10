@@ -229,7 +229,7 @@ def _step_import(self, on_complete=None, collection=None):
         done = self.total - len(self.queue)
 
         if task['obj_type'] == OBJ_LIGHT:
-            create_light(task, collection)
+            create_light(task, collection, self.parent_links)
         else:
             target_collection = getCollection(None, task.get('collection'), parent=collection)
             import_model(task, target_collection, self.name_to_empty, self.parent_links)
@@ -355,7 +355,7 @@ def _find_mesh(name, search_dirs):
     return None
 
 # -- Create Blender light from parsed object --
-def create_light(lt, collection):
+def create_light(lt, collection, parent_links):
     if 'light_type' not in lt:
         return
 
@@ -390,6 +390,12 @@ def create_light(lt, collection):
         lo.rotation_euler.x += math.radians(90)
 
     to_link.append((collection, lo))
+
+    parent = lt.get('parent_name')
+    if parent and parent != "Primary sector":
+        print_debug(f"Parent Assigned {parent}")
+        parent_links.append((lo, parent))
+
     return None
 
 # =========================
