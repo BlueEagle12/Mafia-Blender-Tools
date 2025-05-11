@@ -604,7 +604,6 @@ class The4DSImporter:
         bm.edges.ensure_lookup_table()
         bm.normal_update()
 
-        # Step 1: Mark sharp edges
         sharp_radians = radians(angle_limit)
         for e in bm.edges:
             if not e.is_manifold or len(e.link_faces) != 2:
@@ -612,13 +611,17 @@ class The4DSImporter:
                 continue
 
             f1, f2 = e.link_faces
+
+            if f1.normal.length == 0 or f2.normal.length == 0:
+                print(f"[WARN] Skipping edge with zero-length normal on face(s): {f1.index}, {f2.index}")
+                e.smooth = True
+                continue
+
             angle = f1.normal.angle(f2.normal)
             e.smooth = angle <= sharp_radians
 
-        # Step 2: Cache sharp edges
         sharp_edges = {e for e in bm.edges if not e.smooth}
 
-        # Step 3: Calculate per-loop normals with sharp split awareness
         loop_normals = []
         for face in bm.faces:
             area = face.calc_area()
@@ -627,7 +630,6 @@ class The4DSImporter:
                 accum = Vector((0.0, 0.0, 0.0))
                 total_area = 0.0
 
-                # Loop over adjacent faces, skip across sharp edges
                 for linked_face in v.link_faces:
                     if linked_face == face:
                         area_contrib = area
@@ -650,16 +652,14 @@ class The4DSImporter:
                 final_normal = accum.normalized() if total_area > 0 else Vector((0.0, 0.0, 1.0))
                 loop_normals.append(final_normal)
 
-        # Step 4: Commit BMesh to mesh
         bm.to_mesh(mesh_data)
         bm.free()
         mesh_data.update()
 
-        # Step 5: Apply custom split normals
         mesh_data.normals_split_custom_set(loop_normals)
 
 
-    def deserialize_object(self, f, materials, mesh, mesh_data):
+    def deserialize_object(self, f, materials, mesh, mesh_data, remove_doubles=False):
         instance_id = struct.unpack("<H", f.read(2))[0]
         if instance_id > 0:
             return None, None
@@ -740,10 +740,11 @@ class The4DSImporter:
                     loop[uv_layer].uv = uv
 
 
-            try:
-                bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
-            except Exception as e:
-                print_debug(f"[WARN] remove_doubles failed on {mesh.name}: {e}")
+            if remove_doubles:
+                try:
+                    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
+                except Exception as e:
+                    print_debug(f"[WARN] remove_doubles failed on {mesh.name}: {e}")
 
             self.apply_average_face_area_normals(bm, mesh_data)
 
@@ -1246,7 +1247,7 @@ class The4DSImporter:
 
                 mesh.matrix_local = transform_mat
 
-                self.deserialize_object(f, materials, mesh, mesh_data)
+                self.deserialize_object(f, materials, mesh, mesh_data, True)
                 
                 if self.should_be_wireframe(mesh):
                     self.setWireFrame(mesh,False)
