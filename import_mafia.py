@@ -399,13 +399,14 @@ def import_model(obj, collection, name_to_empty, parent_links):
         for base in base_objects:
 
             data = base.data
-
-            dup = bpy.data.objects.new("Duplicate_Linked", data)
+            name = base.name
+            dup = bpy.data.objects.new(name, data)
             original_to_duplicate[base] = dup
             if base is not empty_old:
                 duplicates.append(dup)
             else:
                 empty = dup
+                to_link.append((collection, empty))
 
         for base, dup in original_to_duplicate.items():
             if base.parent and base.parent in original_to_duplicate:
@@ -427,8 +428,9 @@ def import_model(obj, collection, name_to_empty, parent_links):
 
     for new in duplicates:
 
-        to_link.append((collection, new))
         if new is not empty:
+            to_link.append((collection, new))
+            
             if obj['hidden']:
                 new.hide_viewport = True
                 new.hide_render = True
@@ -436,6 +438,8 @@ def import_model(obj, collection, name_to_empty, parent_links):
                 if empty is None:
                     empty = bpy.data.objects.new(obj['name'] + "_root", None)
                     duplicates.append(empty)
+                    to_link.append((collection, empty))
+
                 new.matrix_parent_inverse = empty.matrix_world.inverted()
                 new.parent = empty
 

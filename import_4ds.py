@@ -1229,6 +1229,7 @@ class The4DSImporter:
         # Store frame type
         self.frame_types[self.frame_index] = frame_type
 
+
         if parent_id > 0:
             self.parenting_info.append((self.frame_index, parent_id))
 
@@ -1334,6 +1335,7 @@ class The4DSImporter:
                 return False
 
         elif frame_type == FRAME_DUMMY:
+
             empty = bpy.data.objects.new(name, None)
             self.collection.objects.link(empty)
             frames.append(empty)
@@ -1343,7 +1345,6 @@ class The4DSImporter:
 
             # Pass transformation data directly
             self.deserialize_dummy(f, empty, pos, rot_tuple, scl)
-
 
         elif frame_type == FRAME_TARGET:
             empty = bpy.data.objects.new(name, None)
