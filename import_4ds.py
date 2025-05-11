@@ -613,7 +613,7 @@ class The4DSImporter:
             f1, f2 = e.link_faces
 
             if f1.normal.length == 0 or f2.normal.length == 0:
-                print(f"[WARN] Skipping edge with zero-length normal on face(s): {f1.index}, {f2.index}")
+                print_debug(f"[WARN] Skipping edge with zero-length normal on face(s): {f1.index}, {f2.index}")
                 e.smooth = True
                 continue
 
