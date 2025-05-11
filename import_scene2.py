@@ -24,7 +24,7 @@ PROP_ROTATION         = 0x0022
 PROP_SCALE            = 0x002D
 PROP_HIDDEN           = 0x4033
 PROP_LIGHT_MAIN       = 0x4040
-
+PROP_TYPE_SPECIAL     = 0xAE22
 LIGHT_TYPE            = 0x4041
 LIGHT_COLOR           = 0x0026
 LIGHT_POWER           = 0x4042
@@ -42,19 +42,6 @@ OBJ_OCCLUDER          = 0x0C
 OBJ_SECTOR            = 0x99
 OBJ_LIGHTMAP          = 0x9A
 OBJ_SCRIPT            = 0x9B
-
-# Lookup tables
-OBJECT_TYPES = {
-    OBJ_NONE:     "None",
-    OBJ_LIGHT:    "Light",
-    OBJ_CAMERA:   "Camera",
-    OBJ_SOUND:    "Sound",
-    OBJ_MODEL:    "Model",
-    OBJ_OCCLUDER: "Occluder",
-    OBJ_SECTOR:   "Sector",
-    OBJ_LIGHTMAP: "Lightmap",
-    OBJ_SCRIPT:   "Script",
-}
 
 
 class Scene2Importer:
@@ -109,7 +96,8 @@ class Scene2Importer:
                 self._recurse(f, dstart, dend, tasks)
             elif ctype in CHUNK_OBJECT_TYPES:
                 ent = self._extract_props(f, dstart, dend)
-                tasks.append(ent)
+                if ent:
+                    tasks.append(ent)
             ptr += csize
 
 
@@ -165,19 +153,20 @@ class Scene2Importer:
     def _extract_props(self, f, start, end):
         # Clean, readable extraction of chunk properties
         props = {
-            'name':       None,
-            'model':      None,
-            'pos':        None,
-            'rot':        None,
-            'scale':      None,
-            'light_type': None,
-            'color':      None,
-            'power':      None,
-            'range':      None,
-            'angle':      None,
-            'parent_name':None,
-            'hidden':     None,
-            'obj_type':   OBJ_MODEL
+            'name':         None,
+            'model':        None,
+            'pos':          None,
+            'rot':          None,
+            'scale':        None,
+            'light_type':   None,
+            'color':        None,
+            'power':        None,
+            'range':        None,
+            'angle':        None,
+            'parent_name':  None,
+            'hidden':       None,
+            'obj_type':     None,
+            'special_type': None,
         }
 
         ptr = start
@@ -185,6 +174,7 @@ class Scene2Importer:
             f.seek(ptr)
             ptype, psize = self._read_header(f)
             f.seek(ptr + 6)
+
 
 
             if ptype == PROP_PARENT:
@@ -208,6 +198,7 @@ class Scene2Importer:
 
             if ptype in (PROP_NAME, PROP_NAME_SPECIAL):
                 props['name'] = self._read_cstr(f)
+
 
             elif ptype == PROP_MODEL:
                 props['model'] = (
@@ -233,6 +224,10 @@ class Scene2Importer:
             elif ptype == PROP_TYPE_NORMAL:
                 code = struct.unpack('<I', f.read(4))[0]
                 props['obj_type'] = code
+
+            elif ptype == PROP_TYPE_SPECIAL:
+                code = struct.unpack('<I', f.read(4))[0]
+                props['special_type'] = code
 
             elif ptype == PROP_HIDDEN:
                 props['hidden'] = True

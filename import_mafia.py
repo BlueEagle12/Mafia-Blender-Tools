@@ -31,7 +31,75 @@ LIGHT_TYPES = {
     0x08: 'AREA',
 }
 
-OBJ_LIGHT = 0x02
+
+# SpecialObjectType values
+OBJ_NONE            = 0x00
+OBJ_PHYSICAL        = 0x23
+OBJ_PLAYER          = 0x02
+OBJ_CHARACTER       = 0x1B
+OBJ_CAR             = 0x04
+OBJ_DOOR            = 0x06
+OBJ_DOG             = 0x15
+OBJ_PUMPER          = 0x19
+OBJ_PUBLIC_VEHICLE  = 0x08
+OBJ_SCRIPT_SPECIAL  = 0x05
+
+OBJ_NONE            = 0x00
+OBJ_LIGHT           = 0x02
+OBJ_CAMERA          = 0x03
+OBJ_SOUND           = 0x04
+OBJ_MODEL           = 0x09
+OBJ_OCCLUDER        = 0x0C
+OBJ_SECTOR          = 0x99
+OBJ_LIGHTMAP        = 0x9A
+OBJ_SCRIPT          = 0x9B
+
+OBJECT_TYPE_ITEMS = [
+    ('MODEL',    "Model", ""),
+    ('LIGHT',    "Light", ""),
+    ('CAMERA',   "Camera", ""),
+    ('SOUND',    "Sound", ""),
+    ('OCCLUDER', "Occluder", ""),
+    ('SECTOR',   "Sector", ""),
+    ('LIGHTMAP', "Lightmap", ""),
+    ('SCRIPT',   "Script", ""),
+]
+
+# SpecialObjectType entries
+SPECIAL_TYPE_ITEMS = [
+    ('PHYSICAL',        "Physical", ""),
+    ('PLAYER',          "Player", ""),
+    ('CHARACTER',       "Character", ""),
+    ('CAR',             "Car", ""),
+    ('DOOR',            "Door", ""),
+    ('DOG',             "Dog", ""),
+    ('PUMPER',          "Pumper", ""),
+    ('PUBLIC_VEHICLE',  "Public Vehicle", ""),
+    ('SCRIPT_SPECIAL',  "Script (Special)", ""),
+]
+
+object_type_map = {
+    'MODEL': OBJ_MODEL,
+    'LIGHT': OBJ_LIGHT,
+    'CAMERA': OBJ_CAMERA,
+    'SOUND': OBJ_SOUND,
+    'OCCLUDER': OBJ_OCCLUDER,
+    'SECTOR': OBJ_SECTOR,
+    'LIGHTMAP': OBJ_LIGHTMAP,
+    'SCRIPT': OBJ_SCRIPT,
+}
+
+special_type_map = {
+    'PHYSICAL':        OBJ_PHYSICAL,
+    'PLAYER':          OBJ_PLAYER,
+    'CHARACTER':       OBJ_CHARACTER,
+    'CAR':             OBJ_CAR,
+    'DOOR':            OBJ_DOOR,
+    'DOG':             OBJ_DOG,
+    'PUMPER':          OBJ_PUMPER,
+    'PUBLIC_VEHICLE':  OBJ_PUBLIC_VEHICLE,
+    'SCRIPT_SPECIAL':  OBJ_SCRIPT_SPECIAL,
+}
 
 
 # -- References --
@@ -130,6 +198,22 @@ class ImportMafiaBIN(bpy.types.Operator, ImportHelper):
     description="Power value for imported sun(s)"
     ) # type: ignore
 
+    filter_object_types: bpy.props.EnumProperty(
+        name="General Types",
+        items=OBJECT_TYPE_ITEMS,
+        options={'ENUM_FLAG'},
+        default={'MODEL', 'LIGHT', 'SECTOR', 'OCCLUDER'},
+        description="Importable object types"
+    ) # type: ignore
+
+    filter_special_types: bpy.props.EnumProperty(
+        name="Special Types",
+        items=SPECIAL_TYPE_ITEMS,
+        options={'ENUM_FLAG'},
+        default={'PHYSICAL', 'CAR', 'PUBLIC_VEHICLE'},
+        description="Importable special object types"
+    ) # type: ignore
+
     def execute(self, context):
         name = os.path.basename(self.filepath).lower()
 
@@ -137,10 +221,14 @@ class ImportMafiaBIN(bpy.types.Operator, ImportHelper):
         GLOBAL_SUN_POWER = self.sun_power
         GLOBAL_LIGHT_POWER = self.light_power
 
+
+
         if name == "scene2.bin":
             importer = Scene2Importer(self.filepath,start_import_timer)
+            importer.operator = self
         elif name == "cache.bin":
             importer = CacheBinImporter(self.filepath,start_import_timer)
+            importer.operator = self
         else:
             self.report({'ERROR'}, "Only 'scene2.bin' and 'cache.bin' are supported.")
             return {'CANCELLED'}
@@ -150,6 +238,14 @@ class ImportMafiaBIN(bpy.types.Operator, ImportHelper):
     def draw(self, context):
         self.layout.prop(self, "light_power")
         self.layout.prop(self, "sun_power")
+        col = self.layout.column()
+        col.label(text="Object Types:")
+        col.prop_menu_enum(self, "filter_object_types", text="General Types")
+
+        col.separator()
+
+        col.label(text="Special Types:")
+        col.prop_menu_enum(self, "filter_special_types", text="Special Types")
 
 def menu_func(self, context):
     self.layout.operator(
@@ -182,7 +278,7 @@ def start_import_timer(operator_instance, on_complete=None, scene_name=None):
     wm = operator_instance.wm
     total = operator_instance.total
     scene_name = scene_name or "Collection"
-    collection_name = f"{scene_name}_Imported"
+    collection_name = f"{scene_name}"
     collection = getCollection(None, collection_name)
 
     instance_queue.clear()
@@ -224,16 +320,34 @@ def _step_import(self, on_complete=None, collection=None):
 
     prefs = bpy.context.preferences.addons[__name__].preferences
     batch_size = prefs.batch_size
+    enabled_types = set(object_type_map[k] for k in self.operator.filter_object_types if k in object_type_map)
+    special_types = set(special_type_map[k] for k in self.operator.filter_special_types if k in special_type_map)
+
 
     for i in range(min(batch_size, len(self.queue))):
         task = self.queue.pop(0)
         done = self.total - len(self.queue)
 
-        if task['obj_type'] == OBJ_LIGHT:
-            create_light(task, collection, self.parent_links)
-        else:
-            target_collection = getCollection(None, task.get('collection'), parent=collection)
-            import_model(task, target_collection, self.name_to_empty, self.parent_links)
+
+        special_type = task.get('special_type')
+        if special_type is None:
+            special_type = 0x00
+
+        object_type = task.get('obj_type')
+        if object_type is None:
+            object_type = 0x00
+
+
+        print_debug(f"[TASK] obj_type={object_type}, special_type={special_type}")
+
+        if object_type in enabled_types or (
+            special_type in special_types
+        ):
+            if task['obj_type'] == OBJ_LIGHT:
+                create_light(task, collection, self.parent_links)
+            else:
+                target_collection = getCollection(None, task.get('collection'), parent=collection)
+                import_model(task, target_collection, self.name_to_empty, self.parent_links)
 
         self.wm.progress_update(done)
 
