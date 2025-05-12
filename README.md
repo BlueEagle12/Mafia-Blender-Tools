@@ -30,30 +30,30 @@ It reconstructs scenes with correct geometry, materials, transforms, and object 
 - Automatically links to and imports `.4DS` meshes and lights
 - Builds scene structure
 
+
 ---
 
 ## Installation
 
-### Scene2 & Cache Importers
+### Step-by-Step
 
-1. Download or clone this repository.  
-2. In Blender: **Edit → Preferences → Add-ons → Install...**  
-3. Select the following files:
-   - `import_scene2.py`  
-   - `import_cache.py`  
-   - `import_mafia.py`  
-   *(or select the ZIP archive if bundled)*  
-4. Enable these add-ons:
-   - Mafia Scene2 (.bin) Importer  
-   - Mafia Cache (.bin) Importer  
-   - Mafia Import Shared  
-5. Under **Add-on Preferences → Mafia Import Shared**, set the **Mafia Root Folder** to the game's install directory (must include the `.4DS` assets).
+1. **Download the Add-on**  
+   - Visit the GitHub repository  
+   - Click the green **“Code”** button  
+   - Select **“Download ZIP”**
 
-### `.4DS` Importer
+2. **Install in Blender**  
+   - Open Blender  
+   - Go to **Edit → Preferences → Add-ons → Install…**  
+   - Select the ZIP file you just downloaded (do **not** extract it)
 
-1. In Blender: **Edit → Preferences → Add-ons → Install...**  
-2. Select `import_4ds.py` (or ZIP archive if bundled)  
-3. Enable the **LS3D 4DS Importer**  
+3. **Enable the Add-on**  
+   - In the Add-ons tab, search for **Mafia**  
+   - Enable **Mafia LS3D Importer**
+
+4. **Set Mafia Root Folder**  
+   - Still in Preferences, expand the **Mafia LS3D Importer** panel  
+   - Set the **Mafia Root Folder** to your Mafia install directory (must have `.4DS` assets extracted into a models child folder)
 
 ---
 
@@ -75,49 +75,37 @@ Importing out of order may result in missing or unlinked objects.
 2. Select your `scene.4DS` or other model file  
 3. Meshes will appear in the scene
 
+### Exporting `.4DS` Files
+
+#Todo
+
 ### Importing `scene2.bin` or `cache.bin`
 
 1. Go to **File → Import → Mafia (.bin)**  
 2. Select either `cache.bin` or `scene2.bin` as needed  
 3. World geometry and scene layout will be reconstructed  
 
----
-
-## API Access
-
-To call the importer programmatically in a script:
-
-```python
-from import_scene2 import ImportScene2
-
-ImportScene2(filepath="C:/Games/Mafia/scene2.bin")
-```
-
----
-
 ## Troubleshooting
 
 - **Meshes not appearing?**  
-  Make sure the **Mafia Root Folder** points to the location of your `.4DS` files. The importer uses this path to locate and match assets.
+  Make sure the **Mafia Root Folder** points to the parent location of your `.4DS` files. The importer uses this path to locate and match assets.
 
 ---
 
 ## Credits
 
-- `scene2.bin` and `cache.bin` parsing by **Blue Eagle**  
-- `.4DS` model importing by **Sev3n**  
-- Language model assistance by **Grok 3 (xAI)**  
+- `scene2.bin` and `cache.bin` parsing by **Blue Eagle**
+- `.4DS` model importer / exporter refactored and updated by **Blue Eagle**
 
-> Note: The `.4DS` importer was partially assisted by AI. All implementation logic and validation were completed by a human developer.
+- 
+- original `.4DS` model importer / exporter by **Sev3n** & **Grok 3 (xAI)**  
+> Note: The original `.4DS` importer was partially assisted by AI. All implementation logic and validation were completed by a human developer.
 
 ---
 
 ## Todo
 
-- Fix potential blender freeze / crash after importing large scenes
+- Fix exporting
+- Add .bin exporting
 
 ---
-
-## License
-
-Custom / TBD — Contact the authors for details.
