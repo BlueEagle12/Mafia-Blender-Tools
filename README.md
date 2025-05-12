@@ -11,7 +11,7 @@
 
 ## Overview
 
-This Blender add-on allows importing game assets from **Mafia: The City of Lost Heaven**, including:
+This Blender add-on allows importing and exporting (Soon) game assets from **Mafia: The City of Lost Heaven**, including:
 
 - `.4DS` model files  
 - `scene2.bin` and `cache.bin` world data files  
