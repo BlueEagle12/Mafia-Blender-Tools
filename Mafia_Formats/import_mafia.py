@@ -115,14 +115,14 @@ GLOBAL_LIGHT_POWER = 100.0
 
 
 def print_debug(error):
-    prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+    prefs = bpy.context.preferences.addons["Mafia_Formats"].preferences
     if prefs.debug_logging:
         print(error)    
 
 
 # -- Preferences Panel --
 class MafiaPrefs(bpy.types.AddonPreferences):
-    bl_idname = "mafia_importer"
+    bl_idname = "Mafia_Formats"
 
     maps_folder: StringProperty(
         name="Mafia Root Folder",
@@ -193,7 +193,7 @@ class MAFIA_OT_SetImportPreset(bpy.types.Operator):
     
 
 # -- 4DS Importer Wrapper --
-class Mafia_Importer(The4DSImporter):
+class Mafia_Formats(The4DSImporter):
     def build_armature(self):
         try:
             super().build_armature()
@@ -387,7 +387,7 @@ def _step_import(self, on_complete=None, collection=None):
         self.wm.progress_end()
         return None
 
-    prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+    prefs = bpy.context.preferences.addons["Mafia_Formats"].preferences
     batch_size = prefs.batch_size
 
     enabled_types = {
@@ -428,7 +428,7 @@ def _step_import(self, on_complete=None, collection=None):
 
 # -- Import and instance a 4DS model --
 def import_model(obj, collection):
-    prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+    prefs = bpy.context.preferences.addons["Mafia_Formats"].preferences
     maps_dir = bpy.path.abspath(prefs.maps_folder) if prefs.maps_folder else None
     search_dirs = [maps_dir] if maps_dir else []
 
@@ -490,7 +490,7 @@ def import_model(obj, collection):
             print_debug(f"[MISSING] Mesh not found: {model_name}")
             return
 
-        imp4ds = Mafia_Importer(path)
+        imp4ds = Mafia_Formats(path)
         duplicates = imp4ds.import_file()
         if not duplicates:
             print_debug(f"[SKIP] No importable objects in 4DS model: {model_name}")

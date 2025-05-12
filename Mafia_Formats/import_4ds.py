@@ -82,7 +82,7 @@ ALPHA_FALLBACK = ["9ker1.bmp"]  # Textures that require legacy alpha mapping fal
 
 
 def print_debug(error):
-    prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+    prefs = bpy.context.preferences.addons['Mafia_Formats'].preferences
     if prefs.debug_logging:
         print(error)    
 
@@ -1207,7 +1207,7 @@ class The4DSImporter:
 
 
     def import_file(self, collection=None, collection_name=None):
-        prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+        prefs = bpy.context.preferences.addons['Mafia_Formats'].preferences
         self.drawLODS = prefs.import_lods
         self.collection = self.getCollection(collection, collection_name)
 
@@ -1311,7 +1311,7 @@ class Import4DS(bpy.types.Operator, ImportHelper):
     def execute(self, context):
         importer = The4DSImporter(self.filepath)
 
-        prefs = bpy.context.preferences.addons["mafia_importer"].preferences
+        prefs = bpy.context.preferences.addons['Mafia_Formats'].preferences
         
         if prefs.maps_folder:
             importer.base_dir = bpy.path.abspath(prefs.maps_folder)

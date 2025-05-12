@@ -82,7 +82,7 @@ ALPHA_FALLBACK = ["9ker1.bmp"]  # Textures that require legacy alpha mapping fal
 
 
 def print_debug(text):
-    if bpy.context.preferences.addons[__name__].preferences.debug_logging:
+    if bpy.context.preferences.addons['Mafia_Formats'].preferences.debug_logging:
         print(text)
     
 class The4DSExporter:
@@ -596,7 +596,7 @@ class The4DSExporter:
         """Group mesh LOD objects under their base object, excluding standalone _lodX objects."""
         all_lod_objects = set()
 
-        for obj in self.collection.objects:
+        for obj in self.elements:
             if obj.type != "MESH" or "_lod" not in obj.name.lower():
                 continue
 
@@ -608,7 +608,7 @@ class The4DSExporter:
             lod_num = int(lod_str)
 
             base_obj = next(
-                (o for o in self.collection.objects if o.name == base_name and o.type == "MESH"),
+                (o for o in self.elements if o.name == base_name and o.type == "MESH"),
                 None
             )
             if not base_obj or lod_num < 1:
@@ -635,9 +635,11 @@ class The4DSExporter:
         with open(self.filepath, "wb") as f:
             Util.serialize_header(f, self.version)
 
+            self.elements = bpy.context.selected_objects
+
             # Collect and write unique materials
             self.materials = list({
-                mat for obj in self.collection.objects
+                mat for obj in self.elements
                 if obj.type == "MESH" and obj.data.materials
                 for mat in obj.data.materials if mat
             })
@@ -649,11 +651,11 @@ class The4DSExporter:
             # Handle LODs and base object filtering
             lod_objects = self.collect_lods()
             self.objects = [
-                obj for obj in self.collection.objects
+                obj for obj in self.elements
                 if obj.type in {"MESH", "EMPTY"} and obj not in lod_objects
             ]
 
-            armatures = [obj for obj in self.collection.objects if obj.type == "ARMATURE"]
+            armatures = [obj for obj in self.elements if obj.type == "ARMATURE"]
             total_frames = len(self.objects) + sum(len(arm.data.bones) for arm in armatures)
 
             Util.write_int_16(f, total_frames)
