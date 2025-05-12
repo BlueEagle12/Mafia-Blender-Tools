@@ -97,7 +97,7 @@ Importing out of order may result in missing or unlinked objects.
 - `scene2.bin` and `cache.bin` parsing by **Blue Eagle**
 - `.4DS` model importer / exporter refactored and updated by **Blue Eagle**
 
-- 
+
 - original `.4DS` model importer / exporter by **Sev3n** & **Grok 3 (xAI)**  
 > Note: The original `.4DS` importer was partially assisted by AI. All implementation logic and validation were completed by a human developer.
 
