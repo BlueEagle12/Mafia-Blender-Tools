@@ -22,8 +22,8 @@ It reconstructs scenes with correct geometry, materials, transforms, and object 
 
 ## Features
 
-### `.4DS` Import
-- Imports meshes with their corresponding materials
+### `.4DS` Import / Export
+- Imports / Exports 4DS elements
 
 ### `scene2.bin` / `cache.bin` Import
 - Parses element positions, rotations, scales, and additional properties
@@ -49,10 +49,10 @@ It reconstructs scenes with correct geometry, materials, transforms, and object 
 
 3. **Enable the Add-on**  
    - In the Add-ons tab, search for **Mafia**  
-   - Enable **Mafia LS3D Importer**
+   - Enable **Mafia_Formats**
 
 4. **Set Mafia Root Folder**  
-   - Still in Preferences, expand the **Mafia LS3D Importer** panel  
+   - Still in Preferences, expand the **Mafia_Formats** panel  
    - Set the **Mafia Root Folder** to your Mafia install directory (must have `.4DS` assets extracted into a models child folder)
 
 ---
