@@ -1,10 +1,10 @@
-# Mafia 1 Importer for Blender
+# Mafia 1 Format Handler for Blender
 
 ![Blender Version](https://img.shields.io/badge/Blender-4.0+-orange)
 ![Addon Status](https://img.shields.io/badge/Status-Active-brightgreen)
 ![License](https://img.shields.io/badge/License-Custom-lightgrey)
 
-**Version:** 1.2  
+**Version:** 1.3
 **Authors:** Blue Eagle, Sev3n  
 
 ---
