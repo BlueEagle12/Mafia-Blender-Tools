@@ -112,7 +112,7 @@ class The4DSExporter:
         alpha = 1.0
 
         if principled:
-            # Base Color texture
+            # -- Diffuse texture only from 'Base Color' input
             base_color = principled.inputs["Base Color"]
             if base_color.is_linked:
                 tex_node = base_color.links[0].from_node
@@ -122,7 +122,7 @@ class The4DSExporter:
                     if mat.blend_method == "CLIP":
                         flags |= MTL_ADDEFFECT | MTL_COLORKEY
 
-            # Alpha texture
+            # -- Alpha texture only from 'Alpha' input
             alpha_input = principled.inputs["Alpha"]
             if alpha_input.is_linked:
                 alpha_node = alpha_input.links[0].from_node
@@ -132,35 +132,36 @@ class The4DSExporter:
             else:
                 alpha = alpha_input.default_value
 
-            # Environment map
-            for node in nodes:
-                if node.type == "TEX_IMAGE" and node.projection == "SPHERE" and node.image:
-                    env_tex = node.image.name.upper()
-                    flags |= MTL_ENVMAP
-                    metallic = principled.inputs["Metallic"].default_value
-                    break  # Assume only one envmap node
-
+            # -- Emission
             emission = principled.inputs["Emission Color"].default_value[:3]
 
-        # Write material data
-        Util.write_int_32(f, flags)
-        Util.write_vector3(f, Vector((1.0, 1.0, 1.0)))       # Ambient
-        Util.write_vector3(f, Vector((1.0, 1.0, 1.0)))       # Diffuse
-        Util.write_vector3(f, emission)                     # Emission
-        Util.write_float_32(f, alpha)                       # Opacity
+            # -- Environment texture: only scan nodes *not connected* to Principled
+            for node in nodes:
+                if node.type == "TEX_IMAGE" and node.projection == "SPHERE" and node.image:
+                    # Make sure it's not used in base/alpha
+                    if not any(link.to_node == principled for link in node.outputs[0].links):
+                        env_tex = node.image.name.upper()
+                        flags |= MTL_ENVMAP
+                        metallic = principled.inputs["Metallic"].default_value
+                        break  # Only one envmap allowed
 
-        # Environment texture
+        # Write core material data
+        Util.write_int_32(f, flags)
+        Util.write_vector3(f, (1.0, 1.0, 1.0))  # Ambient
+        Util.write_vector3(f, (1.0, 1.0, 1.0))  # Diffuse
+        Util.write_vector3(f, emission)        # Emission
+        Util.write_float_32(f, alpha)          # Opacity
+
         if flags & MTL_ENVMAP:
             Util.write_float_32(f, metallic)
             Util.write_string(f, env_tex)
 
-        # Diffuse texture
-        Util.write_string(f, diffuse_tex)
+        if flags & MTL_DIFFUSETEX:
+            if diffuse_tex:
+                Util.write_string(f, diffuse_tex)
 
-        # Alpha texture
-        if flags & MTL_ADDEFFECT and flags & MTL_ALPHATEX:
+        if flags & MTL_ALPHATEX:
             Util.write_string(f, alpha_tex)
-
 
 
     def serialize_object(self, f, obj, lods):
@@ -221,7 +222,7 @@ class The4DSExporter:
                     verts = face.verts
                     indices = [verts[0].index, verts[2].index, verts[1].index]  # Flip winding
 
-                    Util.write_face_indices(f,*indices)
+                    Util.write_face_indices(f,indices)
 
                 # Resolve material index
                 mat_slot = mat_idx if mat_idx < len(lod_obj.material_slots) else 0
@@ -514,6 +515,7 @@ class The4DSExporter:
         self.frames_map[obj] = self.frame_index
         self.frame_index += 1
 
+
         # Write header
         Util.write_uint_8(f, frame_type)
         if frame_type == FRAME_VISUAL:
@@ -645,6 +647,7 @@ class The4DSExporter:
             })
 
             Util.write_int_16(f, len(self.materials))
+
             for i, mat in enumerate(self.materials):
                 self.serialize_material(f, mat, i + 1)
 
@@ -656,6 +659,7 @@ class The4DSExporter:
             ]
 
             armatures = [obj for obj in self.elements if obj.type == "ARMATURE"]
+
             total_frames = len(self.objects) + sum(len(arm.data.bones) for arm in armatures)
 
             Util.write_int_16(f, total_frames)

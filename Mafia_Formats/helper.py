@@ -48,6 +48,10 @@ class Util:
     @staticmethod
     def write_vector3(f, vec, reorder=False):
         """Write a Vector3 (x, y, z) to binary."""
+
+        if not isinstance(vec, Vector):
+            vec = Vector(vec)
+
         if reorder:
             f.write(struct.pack("<3f", vec.x, vec.z, vec.y))
         else:
@@ -55,6 +59,9 @@ class Util:
 
     @staticmethod
     def write_vector2(f, vec):
+
+        if not isinstance(vec, Vector):
+            vec = Vector(vec)
         """Write a Vector2 (x, y) to binary."""
         f.write(struct.pack("<2f", vec.x, vec.y))
 
@@ -127,7 +134,9 @@ class Util:
     @staticmethod
     def serialize_header(f, version):
         f.write(b"4DS\0")
-        f.write(struct.pack("<H", version))
+
+        Util.write_int_16(f, version)
+
         now = datetime.now()
         epoch = datetime(1601, 1, 1)
         delta = now - epoch
@@ -136,10 +145,13 @@ class Util:
 
     @staticmethod
     def write_string(f, string):
-        encoded = string.encode("windows-1250")
-        f.write(struct.pack("<B", len(encoded)))
-        if len(encoded) > 0:
-            f.write(encoded)
+        encoded = string.encode("windows-1250", errors="replace")
+        length = len(encoded)
+        if length > 255:
+            raise ValueError(f"String too long for 1-byte length prefix: {string[:40]}")
+        if length > 0:
+            f.write(struct.pack("<B", length))
+            f.write(encoded)  
 
     @staticmethod
     def write_uint_8(f, string):
