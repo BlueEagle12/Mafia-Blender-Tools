@@ -647,9 +647,17 @@ class The4DSImporter:
 
 
     def deserialize_object(self, f, materials, mesh, mesh_data, remove_doubles=False):
-        instance_id = Util.read_int_16(f)
-        if instance_id > 0:
-            return None, None
+        #instance_id = Util.read_int_16(f)
+
+        print(f"[READ] deserialize_object() reading instance_id at {f.tell()}")
+        
+        pos = f.tell()
+        bytes_preview = f.read(2)
+
+        print(f"[READ DEBUG] Bytes at {pos}: {bytes_preview} -> {struct.unpack('<H', bytes_preview)[0]}")
+
+        #if instance_id > 0:
+            #return None, None
 
         vertices_per_lod = []
         num_lods = Util.read_uint_8(f)
@@ -960,6 +968,8 @@ class The4DSImporter:
         self.setWireFrame(mesh, True)
         print_debug(f"Created sector {mesh.name} with {num_vertices} vertices, {num_faces} faces")
 
+        portal_meshes = []
+
         for i, (p_num_vertices, plane, p_flags, near_range, far_range, p_vertices) in enumerate(portals):
             portal_name = f"{mesh.name}_Portal{i}"
             portal_data = bpy.data.meshes.new(portal_name)
@@ -973,10 +983,13 @@ class The4DSImporter:
             portal_mesh["flags"] = hex(p_flags)
             portal_mesh["near_range"] = near_range
             portal_mesh["far_range"] = far_range
+            portal_mesh["isPortal"] = True
+            portal_meshes.append(portal_mesh)
 
             self.setWireFrame(portal_mesh, True)
             print_debug(f"Created portal {portal_name} with {p_num_vertices} vertices")
 
+        
         print_debug(f"Stored sector {mesh.name} custom props: flags {flags}, AABB {mesh['min_bounds']} to {mesh['max_bounds']}, {num_portals} portals")
 
 
@@ -1230,6 +1243,7 @@ class The4DSImporter:
 
             frames = []
 
+            print(frame_count)
             for _ in range(frame_count):
                 if not self.deserialize_frame(f, materials, frames):
                     break

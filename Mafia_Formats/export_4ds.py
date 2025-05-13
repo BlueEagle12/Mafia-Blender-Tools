@@ -165,7 +165,9 @@ class The4DSExporter:
 
 
     def serialize_object(self, f, obj, lods):
-        """Serialize a mesh object with multiple LODs (Level of Detail)."""
+        """Serialize a mesh object with multiple LODs (Level of Detail), with UV-safe vertex duplication."""
+        print(f"[WRITE] serialize_object() starts at {f.tell()}")
+
         Util.write_int_16(f, 0)  # instanceID = 0 (no instancing)
         Util.write_uint_8(f, len(lods))  # Number of LODs
 
@@ -184,47 +186,50 @@ class The4DSExporter:
             bmesh.ops.split_edges(bm, edges=bm.edges, use_verts=True)  # Split on seams
 
             Util.write_float_32(f, 100.0 * (1 + lod_idx))  # clippingRange
-            Util.write_int_16(f, len(bm.verts))  # Number of vertices
 
-            # Precompute vertex UVs (first occurrence wins)
-            vertex_uvs = {}
-            if uv_layer:
-                for face in bm.faces:
-                    for loop in face.loops:
-                        idx = loop.vert.index
-                        if idx not in vertex_uvs:
-                            uv = loop[uv_layer].uv
-                            vertex_uvs[idx] = (uv[0], -uv[1])  # Flip V
-            else:
-                vertex_uvs = {i: (0.0, 0.0) for i in range(len(bm.verts))}
+            # Build flattened vertex list (per-loop UV split)
+            export_verts = []
+            export_normals = []
+            export_uvs = []
+            index_map = {}
+            next_index = 0
+            face_groups = {}
 
-            # Write vertex data
-            for i, vert in enumerate(bm.verts):
-                pos = vert.co
-                norm = vert.normal
-                uv = vertex_uvs.get(i, (0.0, 0.0))
+            for face in bm.faces:
+                slot = face.material_index
+                face_indices = []
 
-                Util.write_vector3(f, pos, True)  # Z-up to Y-up handled in helper
-                Util.write_vector3(f, norm, True)  # Same here
+                for loop in [face.loops[0], face.loops[2], face.loops[1]]:  # Flip winding
+                    v = loop.vert
+                    uv = loop[uv_layer].uv if uv_layer else (0.0, 0.0)
+                    key = (v.index, round(uv.x, 6), round(uv.y, 6))
+
+                    if key not in index_map:
+                        index_map[key] = next_index
+                        export_verts.append(v.co.copy())
+                        export_normals.append(v.normal.copy())
+                        export_uvs.append((uv.x, -uv.y))  # Flip V
+                        next_index += 1
+
+                    face_indices.append(index_map[key])
+
+                face_groups.setdefault(slot, []).append(face_indices)
+
+            # Write vertices
+            Util.write_int_16(f, len(export_verts))
+            for pos, norm, uv in zip(export_verts, export_normals, export_uvs):
+                Util.write_vector3(f, pos, True)
+                Util.write_vector3(f, norm, True)
                 Util.write_vector2(f, uv)
 
-            # Face groups by material
-            material_faces = {}
-            for face in bm.faces:
-                material_faces.setdefault(face.material_index, []).append(face)
-
-            Util.write_uint_8(f, len(material_faces))
-
-            for mat_idx, faces in material_faces.items():
+            # Write face groups
+            Util.write_uint_8(f, len(face_groups))
+            for mat_idx, faces in face_groups.items():
                 Util.write_int_16(f, len(faces))
+                for indices in faces:
+                    Util.write_face_indices(f, indices)
 
-                for face in faces:
-                    verts = face.verts
-                    indices = [verts[0].index, verts[2].index, verts[1].index]  # Flip winding
-
-                    Util.write_face_indices(f,indices)
-
-                # Resolve material index
+                # Resolve material
                 mat_slot = mat_idx if mat_idx < len(lod_obj.material_slots) else 0
                 mat = lod_obj.material_slots[mat_slot].material
                 mat_id = self.materials.index(mat) + 1 if mat in self.materials else 0
@@ -233,6 +238,7 @@ class The4DSExporter:
             bm.free()
 
         return len(lods)
+
 
     def serialize_singlemesh(self, f, obj, num_lods):
         """Serialize SINGLEMESH data for a skinned mesh."""
@@ -518,10 +524,11 @@ class The4DSExporter:
 
         # Write header
         Util.write_uint_8(f, frame_type)
+
         if frame_type == FRAME_VISUAL:
             Util.write_uint_8(f, visual_type)
 
-            Util.write_2B(f, visual_flags)
+            Util.write_BB(f, visual_flags)
 
 
         Util.write_int_16(f, parent_id)
@@ -541,6 +548,7 @@ class The4DSExporter:
         if frame_type == FRAME_VISUAL:
             lods = self.lod_map.get(obj, [obj])
             if visual_type in (VISUAL_OBJECT, VISUAL_LITOBJECT):
+                print('Visual_Normal')
                 self.serialize_object(f, obj, lods)
             elif visual_type in (VISUAL_SINGLEMESH, VISUAL_SINGLEMORPH):
                 num_lods = self.serialize_object(f, obj, lods)
@@ -632,12 +640,27 @@ class The4DSExporter:
 
         return all_lod_objects
 
+
+    def buildObjectList(self, elements):
+        element_list = []
+        for element in elements:
+            if not "_Portal" in element.name:
+                element_list.append(element)
+            elif element.parent:
+                parent = element.parent
+                if parent not in self.portal_parents:
+                    self.portal_parents[parent] = []
+                self.portal_parents[parent].append(element)
+        return element_list
+
     def serialize_file(self):
         """Main 4DS file serialization entry point."""
         with open(self.filepath, "wb") as f:
             Util.serialize_header(f, self.version)
 
-            self.elements = bpy.context.selected_objects
+            self.portal_parents = {} # Important later on
+
+            self.elements = self.buildObjectList(bpy.context.selected_objects)
 
             # Collect and write unique materials
             self.materials = list({
@@ -663,6 +686,8 @@ class The4DSExporter:
             total_frames = len(self.objects) + sum(len(arm.data.bones) for arm in armatures)
 
             Util.write_int_16(f, total_frames)
+
+            print(total_frames)
 
             # Serialize normal objects
             for obj in self.objects:

@@ -148,14 +148,15 @@ class Util:
         encoded = string.encode("windows-1250", errors="replace")
         length = len(encoded)
         if length > 255:
-            raise ValueError(f"String too long for 1-byte length prefix: {string[:40]}")
+            raise ValueError("String too long")
+        f.write(struct.pack("<B", length))
         if length > 0:
-            f.write(struct.pack("<B", length))
-            f.write(encoded)  
+            f.write(encoded)
 
     @staticmethod
     def write_uint_8(f, string):
         f.write(struct.pack("<B", string))
+
 
     @staticmethod
     def write_int_16(f, string):
@@ -206,7 +207,7 @@ class Util:
         f.write(struct.pack(f"<{len(data)}H", *data))
 
     @staticmethod
-    def write_2B(f, values):
+    def write_BB(f, values):
         if len(values) != 2:
             raise ValueError("Expected exactly two bytes")
-        f.write(struct.pack("<2B", *values))
+        f.write(struct.pack("<BB", *values))
