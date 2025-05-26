@@ -98,6 +98,31 @@ class The4DSExporter:
         self.lod_map = {}     # Maps base mesh to LOD objects
 
 
+    def get_emission_color(self, principled):
+        emission_input = principled.inputs["Emission Color"]
+        
+        if emission_input.is_linked:
+            emission_node = emission_input.links[0].from_node
+
+            if isinstance(emission_node, bpy.types.ShaderNodeMixRGB) and emission_node.blend_type == 'MULTIPLY':
+                if emission_node.inputs[1].is_linked:
+                    mix_node = emission_node.inputs[1].links[0].from_node
+                else:
+                    mix_node = None
+            else:
+                mix_node = emission_node
+
+            if isinstance(mix_node, bpy.types.ShaderNodeMixRGB) and mix_node.blend_type == 'MULTIPLY':
+                strength_color = mix_node.inputs[1].default_value
+                return strength_color[:3]
+
+        color = emission_input.default_value[:3]
+        if any(c > 0.0 for c in color):
+            return color
+
+        return None
+
+
     def serialize_material(self, f, mat, mat_index):
         """Serialize a Blender material to 4DS format."""
         nodes = mat.node_tree.nodes if mat.use_nodes else []
@@ -116,34 +141,56 @@ class The4DSExporter:
             base_color = principled.inputs["Base Color"]
             if base_color.is_linked:
                 tex_node = base_color.links[0].from_node
-                if tex_node.type == "TEX_IMAGE" and tex_node.image:
+
+                if isinstance(tex_node, bpy.types.ShaderNodeTexImage) and tex_node.image:
                     diffuse_tex = tex_node.image.name.upper()
                     flags |= MTL_DIFFUSETEX
-                    if mat.blend_method == "CLIP":
-                        flags |= MTL_ADDEFFECT | MTL_COLORKEY
 
-            # -- Alpha texture only from 'Alpha' input
+                elif isinstance(tex_node, bpy.types.ShaderNodeMixRGB):
+                    diffuse_input = tex_node.inputs["Color1"]
+                    env_input = tex_node.inputs["Color2"]
+
+                    if diffuse_input.is_linked:
+                        diffuse_node = diffuse_input.links[0].from_node
+                        if isinstance(diffuse_node, bpy.types.ShaderNodeTexImage) and diffuse_node.image:
+                            diffuse_tex = diffuse_node.image.name.upper()
+                            flags |= MTL_DIFFUSETEX
+
+                    if env_input.is_linked:
+                        env_node = env_input.links[0].from_node
+                        if isinstance(env_node, bpy.types.ShaderNodeTexImage) and env_node.image:
+                            env_tex = env_node.image.name.upper()
+                            flags |= MTL_ENVMAP
+
+                    metallic = principled.inputs["Metallic"].default_value
+
+
+            # -- Alpha texture or color key from 'Alpha' input
             alpha_input = principled.inputs["Alpha"]
             if alpha_input.is_linked:
                 alpha_node = alpha_input.links[0].from_node
-                if alpha_node.type == "TEX_IMAGE" and alpha_node.image:
-                    alpha_tex = alpha_node.image.name.upper()
-                    flags |= MTL_ADDEFFECT | MTL_ALPHATEX
+
+                if isinstance(alpha_node, bpy.types.ShaderNodeTexImage) and alpha_node.image:
+                    alpha_name = alpha_node.image.name.upper()
+                    if "KEYMASK" not in alpha_name:
+                        alpha_tex = alpha_name
+                        flags |= MTL_ADDEFFECT | MTL_ALPHATEX
+                    elif flags & MTL_DIFFUSETEX:
+                        # Treat as color key if flagged and KEYMASK detected
+                        flags |= MTL_ADDEFFECT | MTL_COLORKEY
+
+                elif isinstance(alpha_node, bpy.types.ShaderNodeMath):
+                    if flags & MTL_DIFFUSETEX:
+                        flags |= MTL_ADDEFFECT | MTL_COLORKEY
             else:
                 alpha = alpha_input.default_value
 
             # -- Emission
-            emission = principled.inputs["Emission Color"].default_value[:3]
 
-            # -- Environment texture: only scan nodes *not connected* to Principled
-            for node in nodes:
-                if node.type == "TEX_IMAGE" and node.projection == "SPHERE" and node.image:
-                    # Make sure it's not used in base/alpha
-                    if not any(link.to_node == principled for link in node.outputs[0].links):
-                        env_tex = node.image.name.upper()
-                        flags |= MTL_ENVMAP
-                        metallic = principled.inputs["Metallic"].default_value
-                        break  # Only one envmap allowed
+            emission_strength = principled.inputs["Emission Strength"].default_value
+
+            if emission_strength > 0:
+                emission = self.get_emission_color(principled) or emission
 
         # Write core material data
         Util.write_int_32(f, flags)
@@ -156,9 +203,7 @@ class The4DSExporter:
             Util.write_float_32(f, metallic)
             Util.write_string(f, env_tex)
 
-        if flags & MTL_DIFFUSETEX:
-            if diffuse_tex:
-                Util.write_string(f, diffuse_tex)
+        Util.write_string(f, diffuse_tex)
 
         if flags & MTL_ALPHATEX:
             Util.write_string(f, alpha_tex)
@@ -254,18 +299,17 @@ class The4DSExporter:
             Util.write_uint_8(f, len(bones))  # numBones
 
             # Build vertex group map
-            weighted_count = 0
-            vertex_weights = {}
+            non_weighted_count = 0
+            vertex_to_groups = {}
             for v in obj.data.vertices:
-                for g in v.groups:
-                    if g.weight > 0.0:
-                        group = obj.vertex_groups[g.group]
-                        if group.name in bone_names:
-                            vertex_weights.setdefault(v.index, []).append((group.name, g.weight))
-                            if g.weight < 1.0:
-                                weighted_count += 1
+                relevant = [(obj.vertex_groups[g.group].name, g.weight)
+                            for g in v.groups
+                            if obj.vertex_groups[g.group].name in bone_names and g.weight > 0.0]
+                if not relevant:
+                    non_weighted_count += 1
+                vertex_to_groups[v.index] = relevant
 
-            Util.write_int_32(f, total_verts - weighted_count)  # numNonWeightedVerts
+            Util.write_int_32(f, non_weighted_count)
 
             # Mesh AABB
             coords = [v.co for v in obj.data.vertices]
@@ -275,31 +319,47 @@ class The4DSExporter:
             Util.write_vector3(f, min_bounds, reorder=True)
             Util.write_vector3(f, max_bounds, reorder=True)
 
-            # Per-bone block
+            # Track linear vertex layout
+            written_vertices = set()
+            vertex_order = []
+
             for bone_idx, bone in enumerate(bones):
-                matrix = armature.matrix_world.inverted() @ bone.matrix_local
-                Util.write_matrix4x4(f, matrix)
+                # Mafia expects object-to-bone (inverse bind matrix)
+                inverse_bind = (armature.matrix_world @ bone.matrix_local).inverted()
+                Util.write_matrix4x4(f, inverse_bind)
 
                 vg = obj.vertex_groups.get(bone.name)
-                if vg:
-                    locked = [v.index for v in obj.data.vertices
-                            if any(g.group == vg.index and g.weight == 1.0 for g in v.groups)]
-                    weighted = [v.index for v in obj.data.vertices
-                                if any(g.group == vg.index and 0.0 < g.weight < 1.0 for g in v.groups)]
-                else:
-                    locked = []
-                    weighted = []
+                locked = []
+                weighted = []
 
+                if vg:
+                    for v in obj.data.vertices:
+                        for g in v.groups:
+                            if g.group == vg.index:
+                                if g.weight == 1.0:
+                                    locked.append(v.index)
+                                elif 0.0 < g.weight < 1.0:
+                                    weighted.append((v.index, g.weight))
+
+                # Mafia assumes implicit vertex ordering
                 Util.write_int_32(f, len(locked))
                 Util.write_int_32(f, len(weighted))
                 Util.write_int_32(f, bone_idx)
-
                 Util.write_vector3(f, min_bounds, reorder=True)
                 Util.write_vector3(f, max_bounds, reorder=True)
 
-                for vidx in weighted:
-                    weight = next(g.weight for g in obj.data.vertices[vidx].groups if g.group == vg.index)
+                for _, weight in weighted:
                     Util.write_float_32(f, weight)
+
+                # Keep linear order for debug/consistency
+                vertex_order.extend(locked + [vidx for vidx, _ in weighted])
+                written_vertices.update(locked)
+                written_vertices.update(vidx for vidx, _ in weighted)
+
+            # (Optional) Sanity check: warn if not all verts were handled
+            unprocessed = [i for i in range(total_verts) if i not in written_vertices]
+            if unprocessed:
+                print_debug(f"[WARN] {len(unprocessed)} vertices not assigned to any bone: {unprocessed}")
 
 
     def serialize_morph(self, f, obj, num_lods):
@@ -464,24 +524,6 @@ class The4DSExporter:
         bm.free()
 
 
-    def serialize_joint(self, f, bone, armature, parent_id):
-        """Serialize a JOINT frame."""
-        matrix = armature.matrix_world.inverted() @ bone.matrix_local
-
-        # Swap Y/Z rows for Y-up coordinate system (manual swap)
-        matrix = Matrix((
-            matrix[0],
-            matrix[2],
-            matrix[1],
-            matrix[3]
-        ))
-
-        Util.write_matrix4x4(f, matrix)
-
-        bone_idx = list(armature.data.bones).index(bone)
-        Util.write_int_32(f, bone_idx)
-
-
     def serialize_frame(self, f, obj):
         """Serialize a single frame (object, dummy, sector, etc.) into 4DS format."""
 
@@ -567,39 +609,60 @@ class The4DSExporter:
         elif frame_type == FRAME_OCCLUDER:
             self.serialize_occluder(f, obj)
 
+    def serialize_joint(self, f, bone, armature, matrix):
+        matrix = armature.matrix_world.inverted() @ bone.matrix_local
+
+        # Swap Y/Z rows for Y-up coordinate system (manual swap)
+        matrix[1], matrix[2] = matrix[2], matrix[1]
+
+        Util.write_matrix4x4(f, matrix)
+
+        bone_idx = list(armature.data.bones).index(bone)
+        Util.write_int_32(f, bone_idx)
+        
 
     def serialize_joints(self, f, armature):
         """Serialize each armature bone as a JOINT frame."""
+
+        originalIndex = self.frame_index
+        for bone in armature.data.bones:
+            self.joint_map[bone.name] = self.frame_index
+            self.frame_index += 1
+
+        self.frame_index = originalIndex
+
         for bone in armature.data.bones:
             frame_type = FRAME_JOINT
+
             parent_id = (
                 self.joint_map.get(bone.parent.name, self.frames_map.get(armature, 0))
                 if bone.parent else 0
             )
 
             # Build matrix and reorder from Blender Z-up to Y-up
-            matrix = armature.matrix_world @ bone.matrix_local
-            matrix = Matrix((matrix[0], matrix[2], matrix[1], matrix[3]))  # Y-up reorder
+            #matrix = armature.matrix_world() @ bone.matrix_local
+            matrix = bone.matrix_local
+
+            if bone.parent:
+                matrix = bone.parent.matrix_local.inverted() @ bone.matrix_local
+
 
             pos = matrix.to_translation()
             rot = matrix.to_quaternion()
             scale = matrix.to_scale()
 
-            self.joint_map[bone.name] = self.frame_index
-            self.frame_index += 1
-
             # Write frame header
             Util.write_uint_8(f, frame_type)
             Util.write_int_16(f, parent_id)
-            Util.write_vector3(f, pos)  # already Y-up
-            Util.write_vector3(f, scale)
-            Util.write_quat(f, rot, reorder=True)
+            Util.write_vector3(f, pos, True)  # already Y-up
+            Util.write_vector3(f, scale, True)
+            Util.write_quat(f, rot, True)
             Util.write_uint_8(f, 0)  # cullingFlags
 
             Util.write_string(f, bone.name)
             Util.write_string(f, "")  # Frame properties (unused)
 
-            self.serialize_joint(f, bone, armature, parent_id)
+            self.serialize_joint(f, bone, armature, matrix)
 
 
     def collect_lods(self):
@@ -688,16 +751,18 @@ class The4DSExporter:
             Util.write_int_16(f, total_frames)
 
             print(total_frames)
-
+                
             # Serialize normal objects
             for obj in self.objects:
                 self.serialize_frame(f, obj)
+
 
             # Serialize joints
             for armature in armatures:
                 self.frames_map[armature] = self.frame_index
                 self.serialize_joints(f, armature)
 
+                
             f.write(struct.pack("<?", False))  # No animation
 
 

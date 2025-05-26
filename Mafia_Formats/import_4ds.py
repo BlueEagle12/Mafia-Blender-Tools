@@ -270,55 +270,30 @@ class The4DSImporter:
         links.new(principled.outputs["BSDF"], output.inputs["Surface"])
 
         tex_image = None
+        alpha_node = None
+        offset = 200
+
         if tex_path:
             tex_image = nodes.new("ShaderNodeTexImage")
             tex_image.image = self.get_or_load_texture(tex_path)
-            tex_image.location = (-600, 200)
+            tex_image.location = (-1000, offset)
             links.new(tex_image.outputs["Color"], principled.inputs["Base Color"])
 
-            if emission_strength and sum(emission_strength) > 0:
-                strength = sum(emission_strength[:3]) / 3.0
+            offset -= 400
 
-                mix_node = nodes.new("ShaderNodeMixRGB")
-                mix_node.blend_type = 'MULTIPLY'
-                mix_node.location = (-400, -200)
-                mix_node.inputs[0].default_value = 1.0
-                mix_node.inputs[1].default_value = (*emission_strength, 1.0)
-                links.new(tex_image.outputs["Color"], mix_node.inputs[2])
-
-                if alpha_map:
-                    alpha_image = nodes.new("ShaderNodeTexImage")
-                    alpha_image.image = alpha_map
-                    alpha_image.location = (-600, -400)
-                    alpha_image.interpolation = 'Closest'
-
-                    alpha_mix = nodes.new("ShaderNodeMixRGB")
-                    alpha_mix.blend_type = 'MULTIPLY'
-                    alpha_mix.location = (-200, -400)
-                    alpha_mix.inputs[0].default_value = 1.0
-                    links.new(mix_node.outputs["Color"], alpha_mix.inputs[1])
-                    links.new(alpha_image.outputs["Color"], alpha_mix.inputs[2])
-
-                    emission_input = alpha_mix.outputs["Color"]
-                else:
-                    emission_input = mix_node.outputs["Color"]
-
-                links.new(emission_input, principled.inputs["Emission Color"])
-                principled.inputs["Emission Strength"].default_value = strength
-
-        # 🆕 Environment map support
         if env_tex:
             env_path = f"{self.base_dir}/maps/{env_tex}"
             env_image = nodes.new("ShaderNodeTexImage")
             env_image.image = self.get_or_load_texture(env_path)
             env_image.projection = "SPHERE"
-            env_image.location = (-300, -300)
+            env_image.location = (-1000, offset)
+
 
             tex_coord = nodes.new("ShaderNodeTexCoord")
             mapping = nodes.new("ShaderNodeMapping")
             mapping.vector_type = 'TEXTURE'
-            tex_coord.location = (-600, -300)
-            mapping.location = (-450, -300)
+            tex_coord.location = (-1400, offset)
+            mapping.location = (-1200, offset)
 
             links.new(tex_coord.outputs["Reflection"], mapping.inputs["Vector"])
             links.new(mapping.outputs["Vector"], env_image.inputs["Vector"])
@@ -326,7 +301,7 @@ class The4DSImporter:
             mix_rgb = nodes.new("ShaderNodeMixRGB")
             mix_rgb.blend_type = 'ADD'
             mix_rgb.inputs["Fac"].default_value = metallic
-            mix_rgb.location = (-150, 0)
+            mix_rgb.location = (-600, 0)
 
             if tex_image:
                 links.new(tex_image.outputs["Color"], mix_rgb.inputs["Color1"])
@@ -335,6 +310,8 @@ class The4DSImporter:
 
             links.new(env_image.outputs["Color"], mix_rgb.inputs["Color2"])
             links.new(mix_rgb.outputs["Color"], principled.inputs["Base Color"])
+
+            offset -= 400
 
         if template_type == "ALPHA_CLIP" and tex_image and color_key:
             tex_image.interpolation = 'Closest'
@@ -354,17 +331,50 @@ class The4DSImporter:
 
         elif template_type == "ALPHA_MASK" and alpha_map:
             tex_image.interpolation = 'Closest'
-            alpha_image = nodes.new("ShaderNodeTexImage")
-            alpha_image.image = alpha_map
-            alpha_image.location = (0, 200)
-            alpha_image.interpolation = 'Closest'
-            links.new(alpha_image.outputs["Color"], principled.inputs["Alpha"])
+            alpha_node = nodes.new("ShaderNodeTexImage")
+            alpha_node.image = alpha_map
+            alpha_node.location = (-1000, offset)
+            alpha_node.interpolation = 'Closest'
+            links.new(alpha_node.outputs["Color"], principled.inputs["Alpha"])
+
+            offset -= 400
 
         elif template_type == "ALPHA_BLEND" and alpha_path:
             alpha_node = nodes.new("ShaderNodeTexImage")
             alpha_node.image = self.get_or_load_texture(alpha_path)
-            alpha_node.location = (-400, -200)
+            alpha_node.location = (-1000, offset)
             links.new(alpha_node.outputs["Color"], principled.inputs["Alpha"])
+
+            offset -= 400
+
+
+        
+        if emission_strength and sum(emission_strength) > 0:
+            strength = sum(emission_strength[:3]) / 3.0
+
+            mix_node = nodes.new("ShaderNodeMixRGB")
+            mix_node.blend_type = 'MULTIPLY'
+            mix_node.location = (-400, -200)
+            mix_node.inputs[0].default_value = 1.0
+            mix_node.inputs[1].default_value = (*emission_strength, 1.0)
+            links.new(tex_image.outputs["Color"], mix_node.inputs[2])
+            
+            if alpha_node:
+                alpha_mix = nodes.new("ShaderNodeMixRGB")
+                alpha_mix.blend_type = 'MULTIPLY'
+                alpha_mix.location = (-200, -400)
+                alpha_mix.inputs[0].default_value = 1.0
+                links.new(mix_node.outputs["Color"], alpha_mix.inputs[1])
+                links.new(alpha_node.outputs["Color"], alpha_mix.inputs[2])
+
+                emission_input = alpha_mix.outputs["Color"]
+            else:
+                emission_input = mix_node.outputs["Color"]
+
+            links.new(emission_input, principled.inputs["Emission Color"])
+            principled.inputs["Emission Strength"].default_value = strength
+
+
 
         return {
             "principled": principled,
@@ -383,7 +393,7 @@ class The4DSImporter:
         alpha_path = f"{self.base_dir}/maps/{alpha_tex}" if alpha_tex else None
         pre_alpha_map = diffuse and diffuse.lower() not in [tex.lower() for tex in ALPHA_FALLBACK]
         color_key = self.get_color_key(tex_path) if use_color_key and tex_path else None
-        alpha_map = self.create_alpha_image(tex_path, 0) if color_key and pre_alpha_map else None
+        alpha_map = self.create_alpha_image(tex_path, 0, (material.name + "_KEYMASK")) if color_key and pre_alpha_map else None
 
         template_type = "OPAQUE"
         if alpha_map:
@@ -428,9 +438,9 @@ class The4DSImporter:
         has_alpha_tex   = bool(flags & MTL_ADDEFFECT and flags & MTL_ALPHATEX)
         is_animated     = bool(flags & MTL_ANIMTEXDIFF)
 
-        ambient  = [Util.read_float_32(f) for _ in range(3)]
-        diffuse  = [Util.read_float_32(f) for _ in range(3)]
-        emission = [Util.read_float_32(f) for _ in range(3)]
+        ambient  = Util.read_vector3(f)
+        diffuse  = Util.read_vector3(f)
+        emission = Util.read_vector3(f)
         alpha    = Util.read_float_32(f)
 
         metallic = 0.0
@@ -500,7 +510,7 @@ class The4DSImporter:
                     self.armature_scale_factor = scale
 
             else:
-                if scale != Vector((1.0, 1.0, 1.0)):
+                if not (scale.x == scale.y == scale.z):
                     raise NotImplementedError("Non-uniform armature scaling is not supported.")
 
                 parent_name = self.frames_map.get(parent_id)
@@ -650,7 +660,7 @@ class The4DSImporter:
         #instance_id = Util.read_int_16(f)
 
         print(f"[READ] deserialize_object() reading instance_id at {f.tell()}")
-        
+
         pos = f.tell()
         bytes_preview = f.read(2)
 
@@ -792,7 +802,9 @@ class The4DSImporter:
             lod_vertex_groups = []
 
             for bone_id in range(num_bones):
-                _ = struct.unpack("<16f", f.read(64))  # inverse transform matrix
+                matrix_vals = struct.unpack("<16f", f.read(64))
+                inverse_bind = Matrix([Vector(matrix_vals[i:i+4]) for i in range(0, 16, 4)])
+   
                 num_locked = Util.read_int_32(f)
                 num_weighted = Util.read_int_32(f)
                 file_bone_id = Util.read_int_32(f)
