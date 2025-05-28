@@ -660,13 +660,10 @@ class The4DSImporter:
 
 
     def deserialize_object(self, f, materials, mesh, mesh_data, remove_doubles=False):
-        #instance_id = Util.read_int_16(f)
+        instance_id = Util.read_int_16(f)
 
-        pos = f.tell()
-        bytes_preview = f.read(2)
-
-        #if instance_id > 0:
-            #return None, None
+        if instance_id > 0:
+            return None, None
 
         vertices_per_lod = []
         num_lods = Util.read_uint_8(f)
@@ -1148,7 +1145,8 @@ class The4DSImporter:
 
             elif visual_type == VISUAL_SINGLEMESH:
 
-                if is_background(): return False
+                if is_background(): 
+                    return False
                 mesh, mesh_data = make_mesh("_mesh")
                 num_lods, _ = self.deserialize_object(f, materials, mesh, mesh_data)
 
@@ -1164,7 +1162,8 @@ class The4DSImporter:
                 self.frame_index += 1
 
             elif visual_type == VISUAL_SINGLEMORPH:
-                if is_background(): return False
+                if is_background(): 
+                    return False
                 mesh, mesh_data = make_mesh("_mesh")
                 num_lods, verts_per_lod = self.deserialize_object(f, materials, mesh, mesh_data)
                 self.deserialize_singlemesh(f, num_lods, mesh)
