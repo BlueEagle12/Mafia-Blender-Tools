@@ -176,7 +176,7 @@ class MAFIA_OT_SetImportPreset(bpy.types.Operator):
     def execute(self, context):
         op = context.operator
         if not hasattr(op, "filter_object_types") or not hasattr(op, "filter_special_types"):
-            self.report({'ERROR'}, "Operator missing required properties.")
+            print({'ERROR'}, "Operator missing required properties.")
             return {'CANCELLED'}
 
         if self.preset == "DEFAULT":
@@ -202,6 +202,10 @@ class Mafia_Formats(The4DSImporter):
                 print_debug(f"[SKIP] Skipping armature due to non-uniform scale: {e}")
                 return
             raise
+
+
+def is_background():
+    return bpy.app.background
 
 
 # -- Class: .Bin Importer --
@@ -253,13 +257,10 @@ class ImportMafiaBIN(bpy.types.Operator, ImportHelper):
 
     def execute(self, context):
         name = os.path.basename(self.filepath).lower()
-
-        # Set global light multipliers
         global GLOBAL_SUN_POWER, GLOBAL_LIGHT_POWER
         GLOBAL_SUN_POWER = self.sun_power
         GLOBAL_LIGHT_POWER = self.light_power
 
-        # Map filenames to importer classes
         importer_map = {
             "scene2.bin": Scene2Importer,
             "cache.bin": CacheBinImporter,
@@ -267,15 +268,72 @@ class ImportMafiaBIN(bpy.types.Operator, ImportHelper):
 
         importer_class = importer_map.get(name)
         if not importer_class:
-            self.report({'ERROR'}, "Only 'scene2.bin' and 'cache.bin' are supported.")
+            print({'ERROR'}, "Only 'scene2.bin' and 'cache.bin' are supported.")
             return {'CANCELLED'}
 
         importer = importer_class(self.filepath, start_import_timer)
         importer.operator = self
 
-        return importer.run(context)
-    
+        # CLI automation detection: do everything in one go if running headless
+        if is_background():
+            # Synchronous import:
+            if name == "scene2.bin":
+                queue = importer.parse_scene2(self.filepath)
+            elif name == "cache.bin":
+                queue = importer.parse_cache(self.filepath)
+            else:
+                print(f"[SKIP] Unknown .bin file: {name}")
+                return {'CANCELLED'}
 
+            total = len(queue)
+            if not queue:
+                print(f"[SKIP] No entities found in {name}")
+                return {'CANCELLED'}
+
+            scene_name = os.path.basename(os.path.dirname(self.filepath))
+            collection = getCollection(None, scene_name)
+
+            enabled_types = {
+                object_type_map[k]
+                for k in self.filter_object_types
+                if k in object_type_map
+            }
+            special_types = {
+                special_type_map[k]
+                for k in self.filter_special_types
+                if k in special_type_map
+            }
+
+            total = len(queue)
+            for idx, task in enumerate(queue):
+                object_type = task.get('obj_type', 0x00)
+                special_type = task.get('special_type', 0x00)
+
+                if object_type in enabled_types or special_type in special_types:
+                    if object_type == OBJ_LIGHT:
+                        create_light(task, collection)
+                    else:
+                        target_collection = getCollection(None, task.get('collection'), parent=collection)
+                        import_model(task, target_collection)
+
+                # Print progress status every 100 objects
+
+                if (idx + 1) % 100 == 0 or (idx + 1) == total:
+                    print(f"Processed {idx + 1}/{total} objects")
+                
+                if (idx + 1) == total:
+                    print(f"Finishing Task")
+
+            end_import_timer()
+
+            print('END (synchronous batch)')
+            return {'FINISHED'}
+
+        # GUI mode: async timer as before
+        return importer.run(context)
+
+
+    
     def draw(self, context):
         layout = self.layout
 
@@ -334,27 +392,36 @@ def getCollection(collection=None, collection_name=None, parent=None):
 
 # -- Begin import process using asynchronous per-frame timer --
 def start_import_timer(operator_instance, on_complete=None, scene_name=None):
-    wm = operator_instance.wm
-    total = operator_instance.total
 
     scene_name = scene_name or "Collection"
     collection = getCollection(None, scene_name)
 
+    wm = operator_instance.wm
+    total = operator_instance.total
+    
     instance_queue.clear()
     to_link.clear()
     name_to_empty.clear()
     parent_links.clear()
 
     reset_model_cache()
-    wm.progress_begin(0, total)
 
-    bpy.context.preferences.edit.use_global_undo = False
 
-    def timer_callback():
-        return _step_import(operator_instance, on_complete, collection)
+    print('Starting')
+    
+    if not is_background():
+        
+        wm.progress_begin(0, total)
 
-    bpy.app.timers.register(timer_callback)
-    return {'RUNNING_MODAL'}
+        bpy.context.preferences.edit.use_global_undo = False
+
+
+    
+        def timer_callback():
+            return _step_import(operator_instance, on_complete, collection)
+
+        bpy.app.timers.register(timer_callback)
+        return {'RUNNING_MODAL'}
 
 
 # -- Finalize import and link all deferred objects into their collections --
@@ -368,13 +435,14 @@ def end_import_timer():
 
     apply_parenting()
 
-    bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    # Only do UI redraw if we're NOT in is_background()/CLI mode
+    if not is_background():
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
 
-    to_link.clear()
+        bpy.context.preferences.edit.use_global_undo = True
+        bpy.context.view_layer.update()
+
     gc.collect()
-
-    bpy.context.preferences.edit.use_global_undo = True
-    bpy.context.view_layer.update()
 
 
 
@@ -385,7 +453,12 @@ def _step_import(self, on_complete=None, collection=None):
             on_complete()
         end_import_timer()
         self.wm.progress_end()
+
+        print('END')
         return None
+
+
+    print('TIMER 1')
 
     prefs = bpy.context.preferences.addons["Mafia_Formats"].preferences
     batch_size = prefs.batch_size
@@ -537,7 +610,6 @@ def reset_model_cache():
         import_model._cache.clear()
 
 
-
 # -- Locate mesh file by name --
 def _find_mesh(name, search_dirs):
     # Try direct match first
@@ -600,7 +672,7 @@ def create_light(lt, collection):
 
 # -- Apply deferred parent-child relationships after all objects are loaded --
 def apply_parenting():
-    print("[PARENT] Applying deferred parenting...")
+    print_debug("[PARENT] Applying deferred parenting...")
 
     for child, parent_name in parent_links:
         parent = name_to_empty.get(parent_name)

@@ -87,6 +87,9 @@ def print_debug(error):
         print(error)    
 
 
+def is_background():
+    return bpy.app.background
+
 class The4DSImporter:
     def __init__(self, filepath):
         self.filepath = filepath
@@ -659,12 +662,8 @@ class The4DSImporter:
     def deserialize_object(self, f, materials, mesh, mesh_data, remove_doubles=False):
         #instance_id = Util.read_int_16(f)
 
-        print(f"[READ] deserialize_object() reading instance_id at {f.tell()}")
-
         pos = f.tell()
         bytes_preview = f.read(2)
-
-        print(f"[READ DEBUG] Bytes at {pos}: {bytes_preview} -> {struct.unpack('<H', bytes_preview)[0]}")
 
         #if instance_id > 0:
             #return None, None
@@ -1148,8 +1147,11 @@ class The4DSImporter:
                     print_debug(f"[WIRE] {mesh.name} set to wireframe due to blank material")
 
             elif visual_type == VISUAL_SINGLEMESH:
+
+                if is_background(): return False
                 mesh, mesh_data = make_mesh("_mesh")
                 num_lods, _ = self.deserialize_object(f, materials, mesh, mesh_data)
+
                 self.deserialize_singlemesh(f, num_lods, mesh)
                 self.bones_map[self.frame_index] = self.base_bone_name
                 self.frame_index += 1
@@ -1162,6 +1164,7 @@ class The4DSImporter:
                 self.frame_index += 1
 
             elif visual_type == VISUAL_SINGLEMORPH:
+                if is_background(): return False
                 mesh, mesh_data = make_mesh("_mesh")
                 num_lods, verts_per_lod = self.deserialize_object(f, materials, mesh, mesh_data)
                 self.deserialize_singlemesh(f, num_lods, mesh)
@@ -1230,7 +1233,6 @@ class The4DSImporter:
                     bpy.context.scene.collection.children.link(collection)
                 return collection
 
-
     def import_file(self, collection=None, collection_name=None):
         prefs = bpy.context.preferences.addons['Mafia_Formats'].preferences
         self.drawLODS = prefs.import_lods
@@ -1255,19 +1257,20 @@ class The4DSImporter:
 
             frames = []
 
-            print(frame_count)
             for _ in range(frame_count):
                 if not self.deserialize_frame(f, materials, frames):
                     break
-
-            if self.armature and self.joints:
-                self.build_armature()
-                for mesh, vertex_groups, bone_to_parent in self.skinned_meshes:
-                    self.apply_skinning(mesh, vertex_groups, bone_to_parent)
+            
+            
+            if not is_background(): 
+                if self.armature and self.joints:
+                    self.build_armature()
+                    for mesh, vertex_groups, bone_to_parent in self.skinned_meshes:
+                        self.apply_skinning(mesh, vertex_groups, bone_to_parent)
 
             self.apply_deferred_parenting()
 
-            # Handle animation flag (not implemented yet)
+                # Handle animation flag (not implemented yet)
             animation = Util.read_uint_8(f)
 
             if animation:

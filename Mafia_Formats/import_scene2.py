@@ -50,6 +50,8 @@ class Scene2Importer:
 
         folder_name = os.path.basename(os.path.dirname(self.filepath))
 
+        print(self.total)
+
         if not self.queue:
             print("[SKIP] No entities found in scene2.bin")
             return {'CANCELLED'}
