@@ -580,7 +580,7 @@ def import_model(obj, collection):
 
             if new.parent is None:
                 if empty is None:
-                    empty = bpy.data.objects.new(object_name + "_root", None)
+                    empty = bpy.data.objects.new(model_name + "_root", None)
                     duplicates.append(empty)
                     to_link.append((collection, empty))
 
